@@ -1549,7 +1549,7 @@ func (cli *DockerCli) CmdPs(args ...string) error {
 				fmt.Fprint(w, "\n")
 			}
 		} else {
-			fmt.Fprint(w, "CONTAINER ID\tIMAGE\tPORTS\tNAMES")
+			fmt.Fprint(w, "CONTAINER ID\tIMAGE\tPORTS\tNAME\t#LINKS")
 			if *size {
 				fmt.Fprintln(w, "\tSIZE")
 			} else {
@@ -1562,6 +1562,8 @@ func (cli *DockerCli) CmdPs(args ...string) error {
 		var (
 			outID    = out.Get("Id")
 			outNames = out.GetList("Names")
+			outName  = outNames[0][1:]
+                        outChild = len(outNames[1:])
 		)
 
 		if !*noTrunc {
@@ -1579,7 +1581,7 @@ func (cli *DockerCli) CmdPs(args ...string) error {
 					ports      = engine.NewTable("", 0)
 				)
 				ports.ReadListFrom([]byte(out.Get("Ports")))
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t", outID, out.Get("Image"), api.DisplayablePorts(ports), strings.Join(outNames, ","))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d", outID, out.Get("Image"), api.DisplayablePorts(ports), outName, outChild)
 				if *size {
 					if out.GetInt("SizeRootFs") > 0 {
 						fmt.Fprintf(w, "%s (virtual %s)\n", units.HumanSize(out.GetInt64("SizeRw")), units.HumanSize(out.GetInt64("SizeRootFs")))

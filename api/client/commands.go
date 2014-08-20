@@ -43,6 +43,15 @@ const (
 	tarHeaderSize = 512
 )
 
+func extractRealName(in []string) string {
+	for i := 0; i < len(in); i++ {
+        	if strings.Index(in[i][1:], "/") == -1 {
+            		return in[i][1:]
+            	}
+        }
+	return in[0][1:]
+}
+
 func (cli *DockerCli) CmdHelp(args ...string) error {
 	if len(args) > 0 {
 		method, exists := cli.getMethod(args[0])
@@ -1562,8 +1571,8 @@ func (cli *DockerCli) CmdPs(args ...string) error {
 		var (
 			outID    = out.Get("Id")
 			outNames = out.GetList("Names")
-			outName  = outNames[0][1:]
-                        outChild = len(outNames[1:])
+			outName  = extractRealName(outNames)
+            outChild = len(outNames[1:])
 		)
 
 		if !*noTrunc {

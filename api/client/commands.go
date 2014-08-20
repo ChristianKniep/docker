@@ -45,11 +45,11 @@ const (
 
 func extractRealName(in []string) string {
 	for i := 0; i < len(in); i++ {
-        	if strings.Index(in[i][1:], "/") == -1 {
-            		return in[i][1:]
+        	if strings.Index(in[i], "/") == -1 {
+            		return in[i]
             	}
         }
-	return in[0][1:]
+	return in[0]
 }
 
 func (cli *DockerCli) CmdHelp(args ...string) error {
@@ -1571,8 +1571,8 @@ func (cli *DockerCli) CmdPs(args ...string) error {
 		var (
 			outID    = out.Get("Id")
 			outNames = out.GetList("Names")
-			outName  = extractRealName(outNames)
-            outChild = len(outNames[1:])
+			outName  = ""
+                        outChild = len(outNames[1:])
 		)
 
 		if !*noTrunc {
@@ -1583,6 +1583,7 @@ func (cli *DockerCli) CmdPs(args ...string) error {
 		for i := 0; i < len(outNames); i++ {
 			outNames[i] = outNames[i][1:]
 		}
+	        outName  = extractRealName(outNames)
 
 		if !*quiet {
 			if *short {

@@ -3,17 +3,26 @@ package jsonlog
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"time"
 )
 
+// JSONLog represents a log message, typically a single entry from a given log stream.
+// JSONLogs can be easily serialized to and from JSON and support custom formatting.
 type JSONLog struct {
-	Log     string    `json:"log,omitempty"`
-	Stream  string    `json:"stream,omitempty"`
+	// Log is the log message
+	Log string `json:"log,omitempty"`
+	// Stream is the log source
+	Stream string `json:"stream,omitempty"`
+	// Created is the created timestamp of log
 	Created time.Time `json:"time"`
+	// Attrs is the list of extra attributes provided by the user
+	Attrs map[string]string `json:"attrs,omitempty"`
 }
 
+// Format returns the log formatted according to format
+// If format is nil, returns the log message
+// If format is json, returns the log marshaled in json format
+// By default, returns the log with the log time formatted according to format.
 func (jl *JSONLog) Format(format string) (string, error) {
 	if format == "" {
 		return jl.Log, nil
@@ -22,24 +31,12 @@ func (jl *JSONLog) Format(format string) (string, error) {
 		m, err := json.Marshal(jl)
 		return string(m), err
 	}
-	return fmt.Sprintf("[%s] %s", jl.Created.Format(format), jl.Log), nil
+	return fmt.Sprintf("%s %s", jl.Created.Format(format), jl.Log), nil
 }
 
-func WriteLog(src io.Reader, dst io.WriteCloser, format string) error {
-	dec := json.NewDecoder(src)
-	for {
-		l := &JSONLog{}
-
-		if err := dec.Decode(l); err == io.EOF {
-			return nil
-		} else if err != nil {
-			log.Printf("Error streaming logs: %s", err)
-			return err
-		}
-		line, err := l.Format(format)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(dst, "%s", line)
-	}
+// Reset resets the log to nil.
+func (jl *JSONLog) Reset() {
+	jl.Log = ""
+	jl.Stream = ""
+	jl.Created = time.Time{}
 }

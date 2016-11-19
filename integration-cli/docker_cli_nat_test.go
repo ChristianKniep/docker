@@ -1,70 +1,93 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net"
-	"os/exec"
-	"testing"
+	"strings"
 
-	"github.com/docker/docker/daemon"
+	"github.com/docker/docker/pkg/integration/checker"
+	"github.com/go-check/check"
 )
 
-func TestNetworkNat(t *testing.T) {
+func startServerContainer(c *check.C, msg string, port int) string {
+	name := "server"
+	cmd := []string{
+		"-d",
+		"-p", fmt.Sprintf("%d:%d", port, port),
+		"busybox",
+		"sh", "-c", fmt.Sprintf("echo %q | nc -lp %d", msg, port),
+	}
+	c.Assert(waitForContainer(name, cmd...), check.IsNil)
+	return name
+}
+
+func getExternalAddress(c *check.C) net.IP {
 	iface, err := net.InterfaceByName("eth0")
 	if err != nil {
-		t.Skip("Test not running with `make test`. Interface eth0 not found: %s", err)
+		c.Skip(fmt.Sprintf("Test not running with `make test`. Interface eth0 not found: %v", err))
 	}
 
 	ifaceAddrs, err := iface.Addrs()
-	if err != nil || len(ifaceAddrs) == 0 {
-		t.Fatalf("Error retrieving addresses for eth0: %v (%d addresses)", err, len(ifaceAddrs))
-	}
+	c.Assert(err, check.IsNil)
+	c.Assert(ifaceAddrs, checker.Not(checker.HasLen), 0)
 
-	ifaceIp, _, err := net.ParseCIDR(ifaceAddrs[0].String())
-	if err != nil {
-		t.Fatalf("Error retrieving the up for eth0: %s", err)
-	}
+	ifaceIP, _, err := net.ParseCIDR(ifaceAddrs[0].String())
+	c.Assert(err, check.IsNil)
 
-	runCmd := exec.Command(dockerBinary, "run", "-d", "-p", "8080", "busybox", "nc", "-lp", "8080")
-	out, _, err := runCommandWithOutput(runCmd)
-	errorOut(err, t, fmt.Sprintf("run1 failed with errors: %v (%s)", err, out))
+	return ifaceIP
+}
 
-	cleanedContainerID := stripTrailingCharacters(out)
+func getContainerLogs(c *check.C, containerID string) string {
+	out, _ := dockerCmd(c, "logs", containerID)
+	return strings.Trim(out, "\r\n")
+}
 
-	inspectCmd := exec.Command(dockerBinary, "inspect", cleanedContainerID)
-	inspectOut, _, err := runCommandWithOutput(inspectCmd)
-	errorOut(err, t, fmt.Sprintf("out should've been a container id: %v %v", inspectOut, err))
+func getContainerStatus(c *check.C, containerID string) string {
+	out := inspectField(c, containerID, "State.Running")
+	return out
+}
 
-	containers := []*daemon.Container{}
-	if err := json.Unmarshal([]byte(inspectOut), &containers); err != nil {
-		t.Fatalf("Error inspecting the container: %s", err)
-	}
-	if len(containers) != 1 {
-		t.Fatalf("Unepexted container count. Expected 0, recieved: %d", len(containers))
-	}
+func (s *DockerSuite) TestNetworkNat(c *check.C) {
+	testRequires(c, DaemonIsLinux, SameHostDaemon)
+	msg := "it works"
+	startServerContainer(c, msg, 8080)
+	endpoint := getExternalAddress(c)
+	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", endpoint.String(), 8080))
+	c.Assert(err, check.IsNil)
 
-	port8080, exists := containers[0].NetworkSettings.Ports["8080/tcp"]
-	if !exists || len(port8080) == 0 {
-		t.Fatal("Port 8080/tcp not found in NetworkSettings")
-	}
+	data, err := ioutil.ReadAll(conn)
+	conn.Close()
+	c.Assert(err, check.IsNil)
 
-	runCmd = exec.Command(dockerBinary, "run", "-p", "8080", "busybox", "sh", "-c", fmt.Sprintf("echo hello world | nc -w 30 %s %s", ifaceIp, port8080[0].HostPort))
-	out, _, err = runCommandWithOutput(runCmd)
-	errorOut(err, t, fmt.Sprintf("run2 failed with errors: %v (%s)", err, out))
+	final := strings.TrimRight(string(data), "\n")
+	c.Assert(final, checker.Equals, msg)
+}
 
-	runCmd = exec.Command(dockerBinary, "logs", cleanedContainerID)
-	out, _, err = runCommandWithOutput(runCmd)
-	errorOut(err, t, fmt.Sprintf("failed to retrieve logs for container: %v %v", cleanedContainerID, err))
+func (s *DockerSuite) TestNetworkLocalhostTCPNat(c *check.C) {
+	testRequires(c, DaemonIsLinux, SameHostDaemon)
+	var (
+		msg = "hi yall"
+	)
+	startServerContainer(c, msg, 8081)
+	conn, err := net.Dial("tcp", "localhost:8081")
+	c.Assert(err, check.IsNil)
 
-	if expected := "hello world\n"; out != expected {
-		t.Fatalf("Unexpected output. Expected: %s, recieved: -->%s<--", expected, out)
-	}
+	data, err := ioutil.ReadAll(conn)
+	conn.Close()
+	c.Assert(err, check.IsNil)
 
-	killCmd := exec.Command(dockerBinary, "kill", cleanedContainerID)
-	out, _, err = runCommandWithOutput(killCmd)
-	errorOut(err, t, fmt.Sprintf("failed to kill container: %v %v", out, err))
-	deleteAllContainers()
+	final := strings.TrimRight(string(data), "\n")
+	c.Assert(final, checker.Equals, msg)
+}
 
-	logDone("network - make sure nat works through the host")
+func (s *DockerSuite) TestNetworkLoopbackNat(c *check.C) {
+	testRequires(c, DaemonIsLinux, SameHostDaemon, NotUserNamespace)
+	msg := "it works"
+	startServerContainer(c, msg, 8080)
+	endpoint := getExternalAddress(c)
+	out, _ := dockerCmd(c, "run", "-t", "--net=container:server", "busybox",
+		"sh", "-c", fmt.Sprintf("stty raw && nc -w 5 %s 8080", endpoint.String()))
+	final := strings.TrimRight(string(out), "\n")
+	c.Assert(final, checker.Equals, msg)
 }

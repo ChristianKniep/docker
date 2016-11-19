@@ -3,18 +3,30 @@ package daemon
 import (
 	"time"
 
-	"github.com/docker/docker/engine"
+	"golang.org/x/net/context"
 )
 
-func (daemon *Daemon) ContainerWait(job *engine.Job) engine.Status {
-	if len(job.Args) != 1 {
-		return job.Errorf("Usage: %s", job.Name)
+// ContainerWait stops processing until the given container is
+// stopped. If the container is not found, an error is returned. On a
+// successful stop, the exit code of the container is returned. On a
+// timeout, an error is returned. If you want to wait forever, supply
+// a negative duration for the timeout.
+func (daemon *Daemon) ContainerWait(name string, timeout time.Duration) (int, error) {
+	container, err := daemon.GetContainer(name)
+	if err != nil {
+		return -1, err
 	}
-	name := job.Args[0]
-	if container := daemon.Get(name); container != nil {
-		status, _ := container.State.WaitStop(-1 * time.Second)
-		job.Printf("%d\n", status)
-		return engine.StatusOK
+
+	return container.WaitStop(timeout)
+}
+
+// ContainerWaitWithContext returns a channel where exit code is sent
+// when container stops. Channel can be cancelled with a context.
+func (daemon *Daemon) ContainerWaitWithContext(ctx context.Context, name string) error {
+	container, err := daemon.GetContainer(name)
+	if err != nil {
+		return err
 	}
-	return job.Errorf("%s: no such container: %s", job.Name, name)
+
+	return container.WaitWithContext(ctx)
 }

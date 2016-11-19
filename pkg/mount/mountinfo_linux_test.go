@@ -64,7 +64,8 @@ const (
     235 35 253:32 / /var/lib/docker/devicemapper/mnt/1a28059f29eda821578b1bb27a60cc71f76f846a551abefabce6efd0146dce9f rw,relatime shared:217 - ext4 /dev/mapper/docker-253:2-425882-1a28059f29eda821578b1bb27a60cc71f76f846a551abefabce6efd0146dce9f rw,seclabel,discard,stripe=16,data=ordered
     239 35 253:33 / /var/lib/docker/devicemapper/mnt/e9aa60c60128cad1 rw,relatime shared:221 - ext4 /dev/mapper/docker-253:2-425882-e9aa60c60128cad1 rw,seclabel,discard,stripe=16,data=ordered
     243 35 253:34 / /var/lib/docker/devicemapper/mnt/5fec11304b6f4713fea7b6ccdcc1adc0a1966187f590fe25a8227428a8df275d-init rw,relatime shared:225 - ext4 /dev/mapper/docker-253:2-425882-5fec11304b6f4713fea7b6ccdcc1adc0a1966187f590fe25a8227428a8df275d-init rw,seclabel,discard,stripe=16,data=ordered
-    247 35 253:35 / /var/lib/docker/devicemapper/mnt/5fec11304b6f4713fea7b6ccdcc1adc0a1966187f590fe25a8227428a8df275d rw,relatime shared:229 - ext4 /dev/mapper/docker-253:2-425882-5fec11304b6f4713fea7b6ccdcc1adc0a1966187f590fe25a8227428a8df275d rw,seclabel,discard,stripe=16,data=ordered`
+    247 35 253:35 / /var/lib/docker/devicemapper/mnt/5fec11304b6f4713fea7b6ccdcc1adc0a1966187f590fe25a8227428a8df275d rw,relatime shared:229 - ext4 /dev/mapper/docker-253:2-425882-5fec11304b6f4713fea7b6ccdcc1adc0a1966187f590fe25a8227428a8df275d rw,seclabel,discard,stripe=16,data=ordered
+    31 21 0:23 / /DATA/foo_bla_bla rw,relatime - cifs //foo/BLA\040BLA\040BLA/ rw,sec=ntlm,cache=loose,unc=\\foo\BLA BLA BLA,username=my_login,domain=mydomain.com,uid=12345678,forceuid,gid=12345678,forcegid,addr=10.1.30.10,file_mode=0755,dir_mode=0755,nounix,rsize=61440,wsize=65536,actimeo=1`
 
 	ubuntuMountInfo = `15 20 0:14 / /sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw
 16 20 0:3 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
@@ -223,7 +224,6 @@ const (
 43 16 0:34 / /proc/fs/nfsd rw,nosuid,nodev,noexec,relatime - nfsd nfsd rw
 44 15 0:35 / /home/tianon/.gvfs rw,nosuid,nodev,relatime - fuse.gvfs-fuse-daemon gvfs-fuse-daemon rw,user_id=1000,group_id=1000
 68 15 0:3336 / /var/lib/docker/aufs/mnt/3597a1a6d6298c1decc339ebb90aad6f7d6ba2e15af3131b1f85e7ee4787a0cd rw,relatime - aufs none rw,si=9b4a7640128db39c
-85 68 8:6 /var/lib/docker/init/dockerinit-0.7.2-dev//deleted /var/lib/docker/aufs/mnt/3597a1a6d6298c1decc339ebb90aad6f7d6ba2e15af3131b1f85e7ee4787a0cd/.dockerinit rw,noatime,nodiratime - ext4 /dev/sda6 rw,data=ordered
 86 68 8:6 /var/lib/docker/containers/3597a1a6d6298c1decc339ebb90aad6f7d6ba2e15af3131b1f85e7ee4787a0cd/config.env /var/lib/docker/aufs/mnt/3597a1a6d6298c1decc339ebb90aad6f7d6ba2e15af3131b1f85e7ee4787a0cd/.dockerenv rw,noatime,nodiratime - ext4 /dev/sda6 rw,data=ordered
 87 68 8:6 /etc/resolv.conf /var/lib/docker/aufs/mnt/3597a1a6d6298c1decc339ebb90aad6f7d6ba2e15af3131b1f85e7ee4787a0cd/etc/resolv.conf rw,noatime,nodiratime - ext4 /dev/sda6 rw,data=ordered
 88 68 8:6 /var/lib/docker/containers/3597a1a6d6298c1decc339ebb90aad6f7d6ba2e15af3131b1f85e7ee4787a0cd/hostname /var/lib/docker/aufs/mnt/3597a1a6d6298c1decc339ebb90aad6f7d6ba2e15af3131b1f85e7ee4787a0cd/etc/hostname rw,noatime,nodiratime - ext4 /dev/sda6 rw,data=ordered
@@ -443,5 +443,34 @@ func TestParseGentooMountinfo(t *testing.T) {
 	_, err := parseInfoFile(r)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestParseFedoraMountinfoFields(t *testing.T) {
+	r := bytes.NewBuffer([]byte(fedoraMountinfo))
+	infos, err := parseInfoFile(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedLength := 58
+	if len(infos) != expectedLength {
+		t.Fatalf("Expected %d entries, got %d", expectedLength, len(infos))
+	}
+	mi := Info{
+		ID:         15,
+		Parent:     35,
+		Major:      0,
+		Minor:      3,
+		Root:       "/",
+		Mountpoint: "/proc",
+		Opts:       "rw,nosuid,nodev,noexec,relatime",
+		Optional:   "shared:5",
+		Fstype:     "proc",
+		Source:     "proc",
+		VfsOpts:    "rw",
+	}
+
+	if *infos[0] != mi {
+		t.Fatalf("expected %#v, got %#v", mi, infos[0])
 	}
 }

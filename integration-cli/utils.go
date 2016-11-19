@@ -1,136 +1,79 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
 	"io"
+	"os"
 	"os/exec"
-	"reflect"
-	"strings"
-	"syscall"
-	"testing"
+	"time"
+
+	"github.com/docker/docker/pkg/integration"
+	"github.com/docker/docker/pkg/integration/cmd"
 )
 
-func getExitCode(err error) (int, error) {
-	exitCode := 0
-	if exiterr, ok := err.(*exec.ExitError); ok {
-		if procExit := exiterr.Sys().(syscall.WaitStatus); ok {
-			return procExit.ExitStatus(), nil
-		}
+func getPrefixAndSlashFromDaemonPlatform() (prefix, slash string) {
+	if daemonPlatform == "windows" {
+		return "c:", `\`
 	}
-	return exitCode, fmt.Errorf("failed to get exit code")
+	return "", "/"
 }
 
-func runCommandWithOutput(cmd *exec.Cmd) (output string, exitCode int, err error) {
-	exitCode = 0
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		var exiterr error
-		if exitCode, exiterr = getExitCode(err); exiterr != nil {
-			// TODO: Fix this so we check the error's text.
-			// we've failed to retrieve exit code, so we set it to 127
-			exitCode = 127
-		}
-	}
-	output = string(out)
-	return
+// TODO: update code to call cmd.RunCmd directly, and remove this function
+func runCommandWithOutput(execCmd *exec.Cmd) (string, int, error) {
+	result := cmd.RunCmd(transformCmd(execCmd))
+	return result.Combined(), result.ExitCode, result.Error
 }
 
-func runCommandWithStdoutStderr(cmd *exec.Cmd) (stdout string, stderr string, exitCode int, err error) {
-	exitCode = 0
-	var stderrBuffer bytes.Buffer
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return "", "", -1, err
-	}
-	go io.Copy(&stderrBuffer, stderrPipe)
-	out, err := cmd.Output()
-
-	if err != nil {
-		var exiterr error
-		if exitCode, exiterr = getExitCode(err); exiterr != nil {
-			// TODO: Fix this so we check the error's text.
-			// we've failed to retrieve exit code, so we set it to 127
-			exitCode = 127
-		}
-	}
-	stdout = string(out)
-	stderr = string(stderrBuffer.Bytes())
-	return
+// TODO: update code to call cmd.RunCmd directly, and remove this function
+func runCommandWithStdoutStderr(execCmd *exec.Cmd) (string, string, int, error) {
+	result := cmd.RunCmd(transformCmd(execCmd))
+	return result.Stdout(), result.Stderr(), result.ExitCode, result.Error
 }
 
-func runCommand(cmd *exec.Cmd) (exitCode int, err error) {
-	exitCode = 0
-	err = cmd.Run()
-	if err != nil {
-		var exiterr error
-		if exitCode, exiterr = getExitCode(err); exiterr != nil {
-			// TODO: Fix this so we check the error's text.
-			// we've failed to retrieve exit code, so we set it to 127
-			exitCode = 127
-		}
-	}
-	return
+// TODO: update code to call cmd.RunCmd directly, and remove this function
+func runCommand(execCmd *exec.Cmd) (exitCode int, err error) {
+	result := cmd.RunCmd(transformCmd(execCmd))
+	return result.ExitCode, result.Error
 }
 
-func startCommand(cmd *exec.Cmd) (exitCode int, err error) {
-	exitCode = 0
-	err = cmd.Start()
-	if err != nil {
-		var exiterr error
-		if exitCode, exiterr = getExitCode(err); exiterr != nil {
-			// TODO: Fix this so we check the error's text.
-			// we've failed to retrieve exit code, so we set it to 127
-			exitCode = 127
-		}
-	}
-	return
-}
-
-func logDone(message string) {
-	fmt.Printf("[PASSED]: %s\n", message)
-}
-
-func stripTrailingCharacters(target string) string {
-	target = strings.Trim(target, "\n")
-	target = strings.Trim(target, " ")
-	return target
-}
-
-func errorOut(err error, t *testing.T, message string) {
-	if err != nil {
-		t.Fatal(message)
+// Temporary shim for migrating commands to the new function
+func transformCmd(execCmd *exec.Cmd) cmd.Cmd {
+	return cmd.Cmd{
+		Command: execCmd.Args,
+		Env:     execCmd.Env,
+		Dir:     execCmd.Dir,
+		Stdin:   execCmd.Stdin,
+		Stdout:  execCmd.Stdout,
 	}
 }
 
-func errorOutOnNonNilError(err error, t *testing.T, message string) {
-	if err == nil {
-		t.Fatalf(message)
-	}
-}
-
-func nLines(s string) int {
-	return strings.Count(s, "\n")
-}
-
-func unmarshalJSON(data []byte, result interface{}) error {
-	err := json.Unmarshal(data, result)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func deepEqual(expected interface{}, result interface{}) bool {
-	return reflect.DeepEqual(result, expected)
+func runCommandPipelineWithOutput(cmds ...*exec.Cmd) (output string, exitCode int, err error) {
+	return integration.RunCommandPipelineWithOutput(cmds...)
 }
 
 func convertSliceOfStringsToMap(input []string) map[string]struct{} {
-	output := make(map[string]struct{})
-	for _, v := range input {
-		output[v] = struct{}{}
-	}
-	return output
+	return integration.ConvertSliceOfStringsToMap(input)
+}
+
+func compareDirectoryEntries(e1 []os.FileInfo, e2 []os.FileInfo) error {
+	return integration.CompareDirectoryEntries(e1, e2)
+}
+
+func listTar(f io.Reader) ([]string, error) {
+	return integration.ListTar(f)
+}
+
+func randomTmpDirPath(s string, platform string) string {
+	return integration.RandomTmpDirPath(s, platform)
+}
+
+func consumeWithSpeed(reader io.Reader, chunkSize int, interval time.Duration, stop chan bool) (n int, err error) {
+	return integration.ConsumeWithSpeed(reader, chunkSize, interval, stop)
+}
+
+func parseCgroupPaths(procCgroupData string) map[string]string {
+	return integration.ParseCgroupPaths(procCgroupData)
+}
+
+func runAtDifferentDate(date time.Time, block func()) {
+	integration.RunAtDifferentDate(date, block)
 }

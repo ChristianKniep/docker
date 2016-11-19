@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/docker/docker/pkg/log"
+	"github.com/Sirupsen/logrus"
 )
 
 type resumableRequestReader struct {
@@ -26,6 +26,8 @@ func ResumableRequestReader(c *http.Client, r *http.Request, maxfail uint32, tot
 	return &resumableRequestReader{client: c, request: r, maxFailures: maxfail, totalSize: totalsize}
 }
 
+// ResumableRequestReaderWithInitialResponse makes it possible to resume
+// reading the body of an already initiated request.
 func ResumableRequestReaderWithInitialResponse(c *http.Client, r *http.Request, maxfail uint32, totalsize int64, initialResponse *http.Response) io.ReadCloser {
 	return &resumableRequestReader{client: c, request: r, maxFailures: maxfail, totalSize: totalsize, currentResponse: initialResponse}
 }
@@ -46,7 +48,7 @@ func (r *resumableRequestReader) Read(p []byte) (n int, err error) {
 	}
 	if err != nil && r.failures+1 != r.maxFailures {
 		r.cleanUpResponse()
-		r.failures += 1
+		r.failures++
 		time.Sleep(5 * time.Duration(r.failures) * time.Second)
 		return 0, nil
 	} else if err != nil {
@@ -72,7 +74,7 @@ func (r *resumableRequestReader) Read(p []byte) (n int, err error) {
 		r.cleanUpResponse()
 	}
 	if err != nil && err != io.EOF {
-		log.Infof("encountered error during pull and clearing it before resume: %s", err)
+		logrus.Infof("encountered error during pull and clearing it before resume: %s", err)
 		err = nil
 	}
 	return n, err

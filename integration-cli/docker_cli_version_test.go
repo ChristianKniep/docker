@@ -1,38 +1,58 @@
 package main
 
 import (
-	"fmt"
-	"os/exec"
 	"strings"
-	"testing"
+
+	"github.com/docker/docker/pkg/integration/checker"
+	"github.com/go-check/check"
 )
 
 // ensure docker version works
-func TestVersionEnsureSucceeds(t *testing.T) {
-	versionCmd := exec.Command(dockerBinary, "version")
-	out, exitCode, err := runCommandWithOutput(versionCmd)
-	errorOut(err, t, fmt.Sprintf("encountered error while running docker version: %v", err))
-
-	if err != nil || exitCode != 0 {
-		t.Fatal("failed to execute docker version")
+func (s *DockerSuite) TestVersionEnsureSucceeds(c *check.C) {
+	out, _ := dockerCmd(c, "version")
+	stringsToCheck := map[string]int{
+		"Client:":       1,
+		"Server:":       1,
+		" Version:":     2,
+		" API version:": 3,
+		" Go version:":  2,
+		" Git commit:":  2,
+		" OS/Arch:":     2,
+		" Built:":       2,
 	}
 
-	stringsToCheck := []string{
-		"Client version:",
-		"Client API version:",
-		"Go version (client):",
-		"Git commit (client):",
-		"Server version:",
-		"Server API version:",
-		"Go version (server):",
-		"Git commit (server):",
+	for k, v := range stringsToCheck {
+		c.Assert(strings.Count(out, k), checker.Equals, v, check.Commentf("The count of %v in %s does not match excepted", k, out))
 	}
+}
 
-	for _, linePrefix := range stringsToCheck {
-		if !strings.Contains(out, linePrefix) {
-			t.Errorf("couldn't find string %v in output", linePrefix)
+// ensure the Windows daemon return the correct platform string
+func (s *DockerSuite) TestVersionPlatform_w(c *check.C) {
+	testRequires(c, DaemonIsWindows)
+	testVersionPlatform(c, "windows/amd64")
+}
+
+// ensure the Linux daemon return the correct platform string
+func (s *DockerSuite) TestVersionPlatform_l(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	testVersionPlatform(c, "linux")
+}
+
+func testVersionPlatform(c *check.C, platform string) {
+	out, _ := dockerCmd(c, "version")
+	expected := "OS/Arch:             " + platform
+
+	split := strings.Split(out, "\n")
+	c.Assert(len(split) >= 14, checker.Equals, true, check.Commentf("got %d lines from version", len(split)))
+
+	// Verify the second 'OS/Arch' matches the platform. Experimental has
+	// more lines of output than 'regular'
+	bFound := false
+	for i := 14; i < len(split); i++ {
+		if strings.Contains(split[i], expected) {
+			bFound = true
+			break
 		}
 	}
-
-	logDone("version - verify that it works and that the output is properly formatted")
+	c.Assert(bFound, checker.Equals, true, check.Commentf("Could not find server '%s' in '%s'", expected, out))
 }

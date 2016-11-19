@@ -1,17 +1,15 @@
 #!/bin/bash
 set -e
+rm -rf "$DEST"
 
-DEST=$1
-
-go build \
-	-o "$DEST/docker-$VERSION" \
-	"${BUILDFLAGS[@]}" \
-	-ldflags "
-		$LDFLAGS
-		$LDFLAGS_STATIC_DOCKER
-	" \
-	./docker
-echo "Created binary: $DEST/docker-$VERSION"
-ln -sf "docker-$VERSION" "$DEST/docker"
-
-hash_files "$DEST/docker-$VERSION"
+# This script exists as backwards compatibility for CI
+(
+	DEST="${DEST}-client"
+	ABS_DEST="${ABS_DEST}-client"
+	. hack/make/binary-client
+)
+(
+	DEST="${DEST}-daemon"
+	ABS_DEST="${ABS_DEST}-daemon"
+	. hack/make/binary-daemon
+)

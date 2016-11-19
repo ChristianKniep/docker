@@ -1,32 +1,31 @@
 package daemon
 
 import (
-	"github.com/docker/docker/engine"
+	"errors"
+	"runtime"
+	"time"
+
+	"github.com/docker/docker/pkg/archive"
 )
 
-func (daemon *Daemon) ContainerChanges(job *engine.Job) engine.Status {
-	if n := len(job.Args); n != 1 {
-		return job.Errorf("Usage: %s CONTAINER", job.Name)
+// ContainerChanges returns a list of container fs changes
+func (daemon *Daemon) ContainerChanges(name string) ([]archive.Change, error) {
+	start := time.Now()
+	container, err := daemon.GetContainer(name)
+	if err != nil {
+		return nil, err
 	}
-	name := job.Args[0]
-	if container := daemon.Get(name); container != nil {
-		outs := engine.NewTable("", 0)
-		changes, err := container.Changes()
-		if err != nil {
-			return job.Error(err)
-		}
-		for _, change := range changes {
-			out := &engine.Env{}
-			if err := out.Import(change); err != nil {
-				return job.Error(err)
-			}
-			outs.Add(out)
-		}
-		if _, err := outs.WriteListTo(job.Stdout); err != nil {
-			return job.Error(err)
-		}
-	} else {
-		return job.Errorf("No such container: %s", name)
+
+	if runtime.GOOS == "windows" && container.IsRunning() {
+		return nil, errors.New("Windows does not support diff of a running container")
 	}
-	return engine.StatusOK
+
+	container.Lock()
+	defer container.Unlock()
+	c, err := container.RWLayer.Changes()
+	if err != nil {
+		return nil, err
+	}
+	containerActions.WithValues("changes").UpdateSince(start)
+	return c, nil
 }

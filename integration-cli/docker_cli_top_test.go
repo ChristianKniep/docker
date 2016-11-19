@@ -1,72 +1,73 @@
 package main
 
 import (
-	"fmt"
-	"os/exec"
 	"strings"
-	"testing"
+
+	"github.com/docker/docker/pkg/integration/checker"
+	icmd "github.com/docker/docker/pkg/integration/cmd"
+	"github.com/go-check/check"
 )
 
-func TestTopNonPrivileged(t *testing.T) {
-	runCmd := exec.Command(dockerBinary, "run", "-i", "-d", "busybox", "sleep", "20")
-	out, _, err := runCommandWithOutput(runCmd)
-	errorOut(err, t, fmt.Sprintf("failed to start the container: %v", err))
+func (s *DockerSuite) TestTopMultipleArgs(c *check.C) {
+	out, _ := runSleepingContainer(c, "-d")
+	cleanedContainerID := strings.TrimSpace(out)
 
-	cleanedContainerID := stripTrailingCharacters(out)
-
-	topCmd := exec.Command(dockerBinary, "top", cleanedContainerID)
-	out, _, err = runCommandWithOutput(topCmd)
-	errorOut(err, t, fmt.Sprintf("failed to run top: %v %v", out, err))
-
-	topCmd = exec.Command(dockerBinary, "top", cleanedContainerID)
-	out2, _, err2 := runCommandWithOutput(topCmd)
-	errorOut(err, t, fmt.Sprintf("failed to run top: %v %v", out2, err2))
-
-	killCmd := exec.Command(dockerBinary, "kill", cleanedContainerID)
-	_, err = runCommand(killCmd)
-	errorOut(err, t, fmt.Sprintf("failed to kill container: %v", err))
-
-	deleteContainer(cleanedContainerID)
-
-	if !strings.Contains(out, "sleep 20") && !strings.Contains(out2, "sleep 20") {
-		t.Fatal("top should've listed `sleep 20` in the process list, but failed twice")
-	} else if !strings.Contains(out, "sleep 20") {
-		t.Fatal("top should've listed `sleep 20` in the process list, but failed the first time")
-	} else if !strings.Contains(out2, "sleep 20") {
-		t.Fatal("top should've listed `sleep 20` in the process list, but failed the second itime")
+	var expected icmd.Expected
+	switch daemonPlatform {
+	case "windows":
+		expected = icmd.Expected{ExitCode: 1, Err: "Windows does not support arguments to top"}
+	default:
+		expected = icmd.Expected{Out: "PID"}
 	}
-
-	logDone("top - sleep process should be listed in non privileged mode")
+	result := dockerCmdWithResult("top", cleanedContainerID, "-o", "pid")
+	c.Assert(result, icmd.Matches, expected)
 }
 
-func TestTopPrivileged(t *testing.T) {
-	runCmd := exec.Command(dockerBinary, "run", "--privileged", "-i", "-d", "busybox", "sleep", "20")
-	out, _, err := runCommandWithOutput(runCmd)
-	errorOut(err, t, fmt.Sprintf("failed to start the container: %v", err))
+func (s *DockerSuite) TestTopNonPrivileged(c *check.C) {
+	out, _ := runSleepingContainer(c, "-d")
+	cleanedContainerID := strings.TrimSpace(out)
 
-	cleanedContainerID := stripTrailingCharacters(out)
+	out1, _ := dockerCmd(c, "top", cleanedContainerID)
+	out2, _ := dockerCmd(c, "top", cleanedContainerID)
+	dockerCmd(c, "kill", cleanedContainerID)
 
-	topCmd := exec.Command(dockerBinary, "top", cleanedContainerID)
-	out, _, err = runCommandWithOutput(topCmd)
-	errorOut(err, t, fmt.Sprintf("failed to run top: %v %v", out, err))
-
-	topCmd = exec.Command(dockerBinary, "top", cleanedContainerID)
-	out2, _, err2 := runCommandWithOutput(topCmd)
-	errorOut(err, t, fmt.Sprintf("failed to run top: %v %v", out2, err2))
-
-	killCmd := exec.Command(dockerBinary, "kill", cleanedContainerID)
-	_, err = runCommand(killCmd)
-	errorOut(err, t, fmt.Sprintf("failed to kill container: %v", err))
-
-	deleteContainer(cleanedContainerID)
-
-	if !strings.Contains(out, "sleep 20") && !strings.Contains(out2, "sleep 20") {
-		t.Fatal("top should've listed `sleep 20` in the process list, but failed twice")
-	} else if !strings.Contains(out, "sleep 20") {
-		t.Fatal("top should've listed `sleep 20` in the process list, but failed the first time")
-	} else if !strings.Contains(out2, "sleep 20") {
-		t.Fatal("top should've listed `sleep 20` in the process list, but failed the second itime")
+	// Windows will list the name of the launched executable which in this case is busybox.exe, without the parameters.
+	// Linux will display the command executed in the container
+	var lookingFor string
+	if daemonPlatform == "windows" {
+		lookingFor = "busybox.exe"
+	} else {
+		lookingFor = "top"
 	}
 
-	logDone("top - sleep process should be listed in privileged mode")
+	c.Assert(out1, checker.Contains, lookingFor, check.Commentf("top should've listed `%s` in the process list, but failed the first time", lookingFor))
+	c.Assert(out2, checker.Contains, lookingFor, check.Commentf("top should've listed `%s` in the process list, but failed the second time", lookingFor))
+}
+
+// TestTopWindowsCoreProcesses validates that there are lines for the critical
+// processes which are found in a Windows container. Note Windows is architecturally
+// very different to Linux in this regard.
+func (s *DockerSuite) TestTopWindowsCoreProcesses(c *check.C) {
+	testRequires(c, DaemonIsWindows)
+	out, _ := runSleepingContainer(c, "-d")
+	cleanedContainerID := strings.TrimSpace(out)
+	out1, _ := dockerCmd(c, "top", cleanedContainerID)
+	lookingFor := []string{"smss.exe", "csrss.exe", "wininit.exe", "services.exe", "lsass.exe", "CExecSvc.exe"}
+	for i, s := range lookingFor {
+		c.Assert(out1, checker.Contains, s, check.Commentf("top should've listed `%s` in the process list, but failed. Test case %d", s, i))
+	}
+}
+
+func (s *DockerSuite) TestTopPrivileged(c *check.C) {
+	// Windows does not support --privileged
+	testRequires(c, DaemonIsLinux, NotUserNamespace)
+	out, _ := dockerCmd(c, "run", "--privileged", "-i", "-d", "busybox", "top")
+	cleanedContainerID := strings.TrimSpace(out)
+
+	out1, _ := dockerCmd(c, "top", cleanedContainerID)
+	out2, _ := dockerCmd(c, "top", cleanedContainerID)
+	dockerCmd(c, "kill", cleanedContainerID)
+
+	c.Assert(out1, checker.Contains, "top", check.Commentf("top should've listed `top` in the process list, but failed the first time"))
+	c.Assert(out2, checker.Contains, "top", check.Commentf("top should've listed `top` in the process list, but failed the second time"))
 }

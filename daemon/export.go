@@ -1,30 +1,60 @@
 package daemon
 
 import (
+	"fmt"
 	"io"
+	"runtime"
 
-	"github.com/docker/docker/engine"
+	"github.com/docker/docker/container"
+	"github.com/docker/docker/pkg/archive"
+	"github.com/docker/docker/pkg/ioutils"
 )
 
-func (daemon *Daemon) ContainerExport(job *engine.Job) engine.Status {
-	if len(job.Args) != 1 {
-		return job.Errorf("Usage: %s container_id", job.Name)
+// ContainerExport writes the contents of the container to the given
+// writer. An error is returned if the container cannot be found.
+func (daemon *Daemon) ContainerExport(name string, out io.Writer) error {
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("the daemon on this platform does not support export of a container")
 	}
-	name := job.Args[0]
-	if container := daemon.Get(name); container != nil {
-		data, err := container.Export()
-		if err != nil {
-			return job.Errorf("%s: %s", name, err)
-		}
-		defer data.Close()
 
-		// Stream the entire contents of the container (basically a volatile snapshot)
-		if _, err := io.Copy(job.Stdout, data); err != nil {
-			return job.Errorf("%s: %s", name, err)
-		}
-		// FIXME: factor job-specific LogEvent to engine.Job.Run()
-		container.LogEvent("export")
-		return engine.StatusOK
+	container, err := daemon.GetContainer(name)
+	if err != nil {
+		return err
 	}
-	return job.Errorf("No such container: %s", name)
+
+	data, err := daemon.containerExport(container)
+	if err != nil {
+		return fmt.Errorf("Error exporting container %s: %v", name, err)
+	}
+	defer data.Close()
+
+	// Stream the entire contents of the container (basically a volatile snapshot)
+	if _, err := io.Copy(out, data); err != nil {
+		return fmt.Errorf("Error exporting container %s: %v", name, err)
+	}
+	return nil
+}
+
+func (daemon *Daemon) containerExport(container *container.Container) (io.ReadCloser, error) {
+	if err := daemon.Mount(container); err != nil {
+		return nil, err
+	}
+
+	uidMaps, gidMaps := daemon.GetUIDGIDMaps()
+	archive, err := archive.TarWithOptions(container.BaseFS, &archive.TarOptions{
+		Compression: archive.Uncompressed,
+		UIDMaps:     uidMaps,
+		GIDMaps:     gidMaps,
+	})
+	if err != nil {
+		daemon.Unmount(container)
+		return nil, err
+	}
+	arch := ioutils.NewReadCloserWrapper(archive, func() error {
+		err := archive.Close()
+		daemon.Unmount(container)
+		return err
+	})
+	daemon.LogContainerEvent(container, "export")
+	return arch, err
 }

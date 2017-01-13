@@ -58,7 +58,6 @@ docker-run - Run a command in a new container
 [**--memory-reservation**[=*MEMORY-RESERVATION*]]
 [**--memory-swap**[=*LIMIT*]]
 [**--memory-swappiness**[=*MEMORY-SWAPPINESS*]]
-[**--mount**[=*MOUNT*]]
 [**--name**[=*NAME*]]
 [**--network-alias**[=*[]*]]
 [**--network**[=*"bridge"*]]
@@ -318,14 +317,14 @@ redirection on the host system.
    When set to true, keep stdin open even if not attached. The default is false.
 
 **--ip**=""
-   Sets the container's interface IPv4 address (e.g. 172.23.0.9)
+   Sets the container's interface IPv4 address (e.g., 172.23.0.9)
 
-   It can only be used in conjunction with **--net** for user-defined networks
+   It can only be used in conjunction with **--network** for user-defined networks
 
 **--ip6**=""
-   Sets the container's interface IPv6 address (e.g. 2001:db8::1b99)
+   Sets the container's interface IPv6 address (e.g., 2001:db8::1b99)
 
-   It can only be used in conjunction with **--net** for user-defined networks
+   It can only be used in conjunction with **--network** for user-defined networks
 
 **--ipc**=""
    Default is to create a private IPC namespace (POSIX SysV IPC) for the container
@@ -402,7 +401,7 @@ the value of --memory.
 unit, `b` is used. Set LIMIT to `-1` to enable unlimited swap.
 
 **--mac-address**=""
-   Container MAC address (e.g. 92:d0:c6:0a:29:33)
+   Container MAC address (e.g., 92:d0:c6:0a:29:33)
 
    Remember that the MAC address in an Ethernet network must be unique.
 The IPv6 link-local address will be based on the device's MAC address
@@ -558,7 +557,7 @@ incompatible with any restart policy other than `none`.
   Network Namespace - current sysctls allowed:
       Sysctls beginning with net.*
 
-  If you use the `--net=host` option these sysctls will not be allowed.
+  If you use the `--network=host` option these sysctls will not be allowed.
 
 **--sig-proxy**=*true*|*false*
    Proxy received signals to the process (non-TTY mode only). SIGCHLD, SIGSTOP, and SIGKILL are not proxied. The default is *true*.
@@ -989,7 +988,7 @@ You would have to write policy defining a `svirt_apache_t` type.
 If you want to set `/dev/sda` device weight to `200`, you can specify the device
 weight by `--blkio-weight-device` flag. Use the following command:
 
-   # docker run -it --blkio-weight-device "/dev/sda:200" ubuntu
+    # docker run -it --blkio-weight-device "/dev/sda:200" ubuntu
 
 ## Specify isolation technology for container (--isolation)
 

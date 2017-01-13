@@ -18,10 +18,11 @@ import (
 	"time"
 
 	"github.com/docker/docker/builder/dockerfile/command"
+	"github.com/docker/docker/integration-cli/checker"
 	"github.com/docker/docker/pkg/archive"
-	"github.com/docker/docker/pkg/integration/checker"
-	icmd "github.com/docker/docker/pkg/integration/cmd"
 	"github.com/docker/docker/pkg/stringutils"
+	"github.com/docker/docker/pkg/testutil"
+	icmd "github.com/docker/docker/pkg/testutil/cmd"
 	"github.com/go-check/check"
 )
 
@@ -1878,8 +1879,8 @@ func (s *DockerSuite) TestBuildWindowsAddCopyPathProcessing(c *check.C) {
 			WORKDIR /wc2
 			ADD wc2 c:/wc2
 			WORKDIR c:/
-			RUN sh -c "[ $(cat c:/wc1) = 'hellowc1' ]"
-			RUN sh -c "[ $(cat c:/wc2) = 'worldwc2' ]"
+			RUN sh -c "[ $(cat c:/wc1/wc1) = 'hellowc1' ]"
+			RUN sh -c "[ $(cat c:/wc2/wc2) = 'worldwc2' ]"
 
 			# Trailing slash on COPY/ADD, Windows-style path.
 			WORKDIR /wd1
@@ -2085,7 +2086,7 @@ func (s *DockerSuite) TestBuildContextCleanup(c *check.C) {
 	if err != nil {
 		c.Fatalf("failed to list contents of tmp dir: %s", err)
 	}
-	if err = compareDirectoryEntries(entries, entriesFinal); err != nil {
+	if err = testutil.CompareDirectoryEntries(entries, entriesFinal); err != nil {
 		c.Fatalf("context should have been deleted, but wasn't")
 	}
 
@@ -2110,7 +2111,7 @@ func (s *DockerSuite) TestBuildContextCleanupFailedBuild(c *check.C) {
 	if err != nil {
 		c.Fatalf("failed to list contents of tmp dir: %s", err)
 	}
-	if err = compareDirectoryEntries(entries, entriesFinal); err != nil {
+	if err = testutil.CompareDirectoryEntries(entries, entriesFinal); err != nil {
 		c.Fatalf("context should have been deleted, but wasn't")
 	}
 
@@ -3610,8 +3611,8 @@ RUN [ "$(id -u):$(id -g)/$(id -un):$(id -gn)/$(id -G):$(id -Gn)" = '1001:1001/do
 
 # Switch back to root and double check that worked exactly as we might expect it to
 USER root
-# Add a "supplementary" group for our dockerio user
 RUN [ "$(id -u):$(id -g)/$(id -un):$(id -gn)/$(id -G):$(id -Gn)" = '0:0/root:root/0 10:root wheel' ] && \
+        # Add a "supplementary" group for our dockerio user
 	echo 'supplementary:x:1002:dockerio' >> /etc/group
 
 # ... and then go verify that we get it like we expect
@@ -5341,7 +5342,7 @@ func (s *DockerSuite) TestBuildContainerWithCgroupParent(c *check.C) {
 	if err != nil {
 		c.Fatalf("failed to read '/proc/self/cgroup - %v", err)
 	}
-	selfCgroupPaths := parseCgroupPaths(string(data))
+	selfCgroupPaths := testutil.ParseCgroupPaths(string(data))
 	_, found := selfCgroupPaths["memory"]
 	if !found {
 		c.Fatalf("unable to find self memory cgroup path. CgroupsPath: %v", selfCgroupPaths)
@@ -5432,7 +5433,7 @@ func (s *DockerTrustSuite) TestTrustedBuild(c *check.C) {
 	name := "testtrustedbuild"
 
 	buildCmd := buildImageCmd(name, dockerFile, true)
-	s.trustedCmd(buildCmd)
+	trustedExecCmd(buildCmd)
 	out, _, err := runCommandWithOutput(buildCmd)
 	if err != nil {
 		c.Fatalf("Error running trusted build: %s\n%s", err, out)
@@ -5463,7 +5464,7 @@ func (s *DockerTrustSuite) TestTrustedBuildUntrustedTag(c *check.C) {
 	name := "testtrustedbuilduntrustedtag"
 
 	buildCmd := buildImageCmd(name, dockerFile, true)
-	s.trustedCmd(buildCmd)
+	trustedExecCmd(buildCmd)
 	out, _, err := runCommandWithOutput(buildCmd)
 	if err == nil {
 		c.Fatalf("Expected error on trusted build with untrusted tag: %s\n%s", err, out)
@@ -5526,10 +5527,7 @@ func (s *DockerTrustSuite) TestTrustedBuildTagFromReleasesRole(c *check.C) {
 	otherTag := fmt.Sprintf("%s:other", repoName)
 	dockerCmd(c, "tag", "busybox", otherTag)
 
-	pushCmd := exec.Command(dockerBinary, "push", otherTag)
-	s.trustedCmd(pushCmd)
-	out, _, err := runCommandWithOutput(pushCmd)
-	c.Assert(err, check.IsNil, check.Commentf("Trusted push failed: %s", out))
+	icmd.RunCmd(icmd.Command(dockerBinary, "push", otherTag), trustedCmd).Assert(c, icmd.Success)
 	s.assertTargetInRoles(c, repoName, "other", "targets/releases")
 	s.assertTargetNotInRoles(c, repoName, "other", "targets")
 
@@ -5544,8 +5542,8 @@ func (s *DockerTrustSuite) TestTrustedBuildTagFromReleasesRole(c *check.C) {
 	name := "testtrustedbuildreleasesrole"
 
 	buildCmd := buildImageCmd(name, dockerFile, true)
-	s.trustedCmd(buildCmd)
-	out, _, err = runCommandWithOutput(buildCmd)
+	trustedExecCmd(buildCmd)
+	out, _, err := runCommandWithOutput(buildCmd)
 	c.Assert(err, check.IsNil, check.Commentf("Trusted build failed: %s", out))
 	c.Assert(out, checker.Contains, fmt.Sprintf("FROM %s@sha", repoName))
 }
@@ -5565,10 +5563,7 @@ func (s *DockerTrustSuite) TestTrustedBuildTagIgnoresOtherDelegationRoles(c *che
 	otherTag := fmt.Sprintf("%s:other", repoName)
 	dockerCmd(c, "tag", "busybox", otherTag)
 
-	pushCmd := exec.Command(dockerBinary, "push", otherTag)
-	s.trustedCmd(pushCmd)
-	out, _, err := runCommandWithOutput(pushCmd)
-	c.Assert(err, check.IsNil, check.Commentf("Trusted push failed: %s", out))
+	icmd.RunCmd(icmd.Command(dockerBinary, "push", otherTag), trustedCmd).Assert(c, icmd.Success)
 	s.assertTargetInRoles(c, repoName, "other", "targets/other")
 	s.assertTargetNotInRoles(c, repoName, "other", "targets")
 
@@ -5583,8 +5578,8 @@ func (s *DockerTrustSuite) TestTrustedBuildTagIgnoresOtherDelegationRoles(c *che
 	name := "testtrustedbuildotherrole"
 
 	buildCmd := buildImageCmd(name, dockerFile, true)
-	s.trustedCmd(buildCmd)
-	out, _, err = runCommandWithOutput(buildCmd)
+	trustedExecCmd(buildCmd)
+	out, _, err := runCommandWithOutput(buildCmd)
 	c.Assert(err, check.NotNil, check.Commentf("Trusted build expected to fail: %s", out))
 }
 
@@ -6070,6 +6065,71 @@ func (s *DockerSuite) TestBuildBuildTimeArgUnconsumedArg(c *check.C) {
 
 }
 
+func (s *DockerSuite) TestBuildBuildTimeArgEnv(c *check.C) {
+	testRequires(c, DaemonIsLinux) // Windows does not support ARG
+	args := []string{
+		"build",
+		"--build-arg", fmt.Sprintf("FOO1=fromcmd"),
+		"--build-arg", fmt.Sprintf("FOO2="),
+		"--build-arg", fmt.Sprintf("FOO3"), // set in env
+		"--build-arg", fmt.Sprintf("FOO4"), // not set in env
+		"--build-arg", fmt.Sprintf("FOO5=fromcmd"),
+		// FOO6 is not set at all
+		"--build-arg", fmt.Sprintf("FOO7=fromcmd"), // should produce a warning
+		"--build-arg", fmt.Sprintf("FOO8="), // should produce a warning
+		"--build-arg", fmt.Sprintf("FOO9"), // should produce a warning
+		".",
+	}
+
+	dockerfile := fmt.Sprintf(`FROM busybox
+		ARG FOO1=fromfile
+		ARG FOO2=fromfile
+		ARG FOO3=fromfile
+		ARG FOO4=fromfile
+		ARG FOO5
+		ARG FOO6
+		RUN env
+		RUN [ "$FOO1" == "fromcmd" ]
+		RUN [ "$FOO2" == "" ]
+		RUN [ "$FOO3" == "fromenv" ]
+		RUN [ "$FOO4" == "fromfile" ]
+		RUN [ "$FOO5" == "fromcmd" ]
+		# The following should not exist at all in the env
+		RUN [ "$(env | grep FOO6)" == "" ]
+		RUN [ "$(env | grep FOO7)" == "" ]
+		RUN [ "$(env | grep FOO8)" == "" ]
+		RUN [ "$(env | grep FOO9)" == "" ]
+	    `)
+
+	ctx, err := fakeContext(dockerfile, nil)
+	c.Assert(err, check.IsNil)
+	defer ctx.Close()
+
+	cmd := exec.Command(dockerBinary, args...)
+	cmd.Dir = ctx.Dir
+	cmd.Env = append(os.Environ(),
+		"FOO1=fromenv",
+		"FOO2=fromenv",
+		"FOO3=fromenv")
+	out, _, err := runCommandWithOutput(cmd)
+	if err != nil {
+		c.Fatal(err, out)
+	}
+
+	// Now check to make sure we got a warning msg about unused build-args
+	i := strings.Index(out, "[Warning]")
+	if i < 0 {
+		c.Fatalf("Missing the build-arg warning in %q", out)
+	}
+
+	out = out[i:] // "out" should contain just the warning message now
+
+	// These were specified on a --build-arg but no ARG was in the Dockerfile
+	c.Assert(out, checker.Contains, "FOO7")
+	c.Assert(out, checker.Contains, "FOO8")
+	c.Assert(out, checker.Contains, "FOO9")
+}
+
 func (s *DockerSuite) TestBuildBuildTimeArgQuotedValVariants(c *check.C) {
 	imgName := "bldargtest"
 	envKey := "foo"
@@ -6177,11 +6237,10 @@ func (s *DockerSuite) TestBuildMultipleTags(c *check.C) {
 	FROM busybox
 	MAINTAINER test-15780
 	`
-	cmd := exec.Command(dockerBinary, "build", "-t", "tag1", "-t", "tag2:v2",
-		"-t", "tag1:latest", "-t", "tag1", "--no-cache", "-")
-	cmd.Stdin = strings.NewReader(dockerfile)
-	_, err := runCommand(cmd)
-	c.Assert(err, check.IsNil)
+	icmd.RunCmd(icmd.Cmd{
+		Command: []string{dockerBinary, "build", "-t", "tag1", "-t", "tag2:v2", "-t", "tag1:latest", "-t", "tag1", "--no-cache", "-"},
+		Stdin:   strings.NewReader(dockerfile),
+	}).Assert(c, icmd.Success)
 
 	id1, err := getIDByName("tag1")
 	c.Assert(err, check.IsNil)
@@ -6515,7 +6574,7 @@ func (s *DockerSuite) TestBuildLabelOverwrite(c *check.C) {
 }
 
 func (s *DockerRegistryAuthHtpasswdSuite) TestBuildFromAuthenticatedRegistry(c *check.C) {
-	dockerCmd(c, "login", "-u", s.reg.username, "-p", s.reg.password, privateRegistryURL)
+	dockerCmd(c, "login", "-u", s.reg.Username(), "-p", s.reg.Password(), privateRegistryURL)
 
 	baseImage := privateRegistryURL + "/baseimage"
 
@@ -6560,7 +6619,7 @@ func (s *DockerRegistryAuthHtpasswdSuite) TestBuildWithExternalAuth(c *check.C) 
 	err = ioutil.WriteFile(configPath, []byte(externalAuthConfig), 0644)
 	c.Assert(err, checker.IsNil)
 
-	dockerCmd(c, "--config", tmp, "login", "-u", s.reg.username, "-p", s.reg.password, privateRegistryURL)
+	dockerCmd(c, "--config", tmp, "login", "-u", s.reg.Username(), "-p", s.reg.Password(), privateRegistryURL)
 
 	b, err := ioutil.ReadFile(configPath)
 	c.Assert(err, checker.IsNil)
@@ -6978,17 +7037,6 @@ func (s *DockerSuite) TestBuildCmdShellArgsEscaped(c *check.C) {
 	}
 }
 
-func (s *DockerSuite) TestContinueCharSpace(c *check.C) {
-	// Test to make sure that we don't treat a \ as a continuation
-	// character IF there are spaces (or tabs) after it on the same line
-	name := "testbuildcont"
-	_, err := buildImage(name, "FROM busybox\nRUN echo hi \\\t\nbye", true)
-	c.Assert(err, check.NotNil, check.Commentf("Build 1 should fail - didn't"))
-
-	_, err = buildImage(name, "FROM busybox\nRUN echo hi \\ \nbye", true)
-	c.Assert(err, check.NotNil, check.Commentf("Build 2 should fail - didn't"))
-}
-
 // Test case for #24912.
 func (s *DockerSuite) TestBuildStepsWithProgress(c *check.C) {
 	name := "testbuildstepswithprogress"
@@ -7141,41 +7189,6 @@ func (s *DockerSuite) TestBuildNetContainer(c *check.C) {
 	c.Assert(strings.TrimSpace(host), check.Equals, "foobar")
 }
 
-// Test case for #24693
-func (s *DockerSuite) TestBuildRunEmptyLineAfterEscape(c *check.C) {
-	name := "testbuildemptylineafterescape"
-	_, out, err := buildImageWithOut(name,
-		`
-FROM busybox
-RUN echo x \
-
-RUN echo y
-RUN echo z
-# Comment requires the '#' to start from position 1
-# RUN echo w
-`, true)
-	c.Assert(err, checker.IsNil)
-	c.Assert(out, checker.Contains, "Step 1/4 : FROM busybox")
-	c.Assert(out, checker.Contains, "Step 2/4 : RUN echo x")
-	c.Assert(out, checker.Contains, "Step 3/4 : RUN echo y")
-	c.Assert(out, checker.Contains, "Step 4/4 : RUN echo z")
-
-	// With comment, see #24693
-	name = "testbuildcommentandemptylineafterescape"
-	_, out, err = buildImageWithOut(name,
-		`
-FROM busybox
-RUN echo grafana && \
-    echo raintank \
-#echo env-load
-RUN echo vegeta
-`, true)
-	c.Assert(err, checker.IsNil)
-	c.Assert(out, checker.Contains, "Step 1/3 : FROM busybox")
-	c.Assert(out, checker.Contains, "Step 2/3 : RUN echo grafana &&     echo raintank")
-	c.Assert(out, checker.Contains, "Step 3/3 : RUN echo vegeta")
-}
-
 func (s *DockerSuite) TestBuildSquashParent(c *check.C) {
 	testRequires(c, ExperimentalDaemon)
 	dockerFile := `
@@ -7282,4 +7295,148 @@ func (s *DockerSuite) TestBuildWindowsUser(c *check.C) {
 		c.Fatal(err)
 	}
 	c.Assert(strings.ToLower(out), checker.Contains, "username=user")
+}
+
+// Verifies if COPY file . when WORKDIR is set to a non-existing directory,
+// the directory is created and the file is copied into the directory,
+// as opposed to the file being copied as a file with the name of the
+// directory. Fix for 27545 (found on Windows, but regression good for Linux too).
+// Note 27545 was reverted in 28505, but a new fix was added subsequently in 28514.
+func (s *DockerSuite) TestBuildCopyFileDotWithWorkdir(c *check.C) {
+	name := "testbuildcopyfiledotwithworkdir"
+	ctx, err := fakeContext(`FROM busybox 
+WORKDIR /foo 
+COPY file . 
+RUN ["cat", "/foo/file"] 
+`,
+		map[string]string{})
+
+	if err != nil {
+		c.Fatal(err)
+	}
+	defer ctx.Close()
+
+	if err := ctx.Add("file", "content"); err != nil {
+		c.Fatal(err)
+	}
+
+	if _, err = buildImageFromContext(name, ctx, true); err != nil {
+		c.Fatal(err)
+	}
+}
+
+// Case-insensitive environment variables on Windows
+func (s *DockerSuite) TestBuildWindowsEnvCaseInsensitive(c *check.C) {
+	testRequires(c, DaemonIsWindows)
+	name := "testbuildwindowsenvcaseinsensitive"
+	if _, err := buildImage(name, `
+		FROM `+WindowsBaseImage+`
+		ENV FOO=bar foo=bar
+  `, true); err != nil {
+		c.Fatal(err)
+	}
+	res := inspectFieldJSON(c, name, "Config.Env")
+	if res != `["foo=bar"]` { // Should not have FOO=bar in it - takes the last one processed. And only one entry as deduped.
+		c.Fatalf("Case insensitive environment variables on Windows failed. Got %s", res)
+	}
+}
+
+// Test case for 29667
+func (s *DockerSuite) TestBuildWorkdirImageCmd(c *check.C) {
+	image := "testworkdirimagecmd"
+	dockerfile := `
+FROM busybox
+WORKDIR /foo/bar
+`
+	out, err := buildImage(image, dockerfile, true)
+	c.Assert(err, checker.IsNil, check.Commentf("Output: %s", out))
+
+	out, _ = dockerCmd(c, "inspect", "--format", "{{ json .Config.Cmd }}", image)
+
+	// The Windows busybox image has a blank `cmd`
+	lookingFor := `["sh"]`
+	if daemonPlatform == "windows" {
+		lookingFor = "null"
+	}
+	c.Assert(strings.TrimSpace(out), checker.Equals, lookingFor)
+
+	image = "testworkdirlabelimagecmd"
+	dockerfile = `
+FROM busybox
+WORKDIR /foo/bar
+LABEL a=b
+`
+	out, err = buildImage(image, dockerfile, true)
+	c.Assert(err, checker.IsNil, check.Commentf("Output: %s", out))
+
+	out, _ = dockerCmd(c, "inspect", "--format", "{{ json .Config.Cmd }}", image)
+	c.Assert(strings.TrimSpace(out), checker.Equals, lookingFor)
+}
+
+// Test case for 28902/28909
+func (s *DockerSuite) TestBuildWorkdirCmd(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+
+	dockerFile := `
+                FROM busybox
+                WORKDIR /
+                `
+	_, err := buildImage("testbuildworkdircmd", dockerFile, true)
+	c.Assert(err, checker.IsNil)
+
+	_, out, err := buildImageWithOut("testbuildworkdircmd", dockerFile, true)
+	c.Assert(err, checker.IsNil)
+	c.Assert(strings.Count(out, "Using cache"), checker.Equals, 1)
+}
+
+func (s *DockerSuite) TestBuildLineErrorOnBuild(c *check.C) {
+	name := "test_build_line_error_onbuild"
+
+	_, err := buildImage(name,
+		`FROM busybox
+  ONBUILD
+  `, true)
+	c.Assert(err.Error(), checker.Contains, "Dockerfile parse error line 2: ONBUILD requires at least one argument")
+}
+
+func (s *DockerSuite) TestBuildLineErrorUknownInstruction(c *check.C) {
+	name := "test_build_line_error_unknown_instruction"
+
+	_, err := buildImage(name,
+		`FROM busybox
+  RUN echo hello world
+  NOINSTRUCTION echo ba
+  RUN echo hello
+  ERROR
+  `, true)
+	c.Assert(err.Error(), checker.Contains, "Dockerfile parse error line 3: Unknown instruction: NOINSTRUCTION")
+}
+
+func (s *DockerSuite) TestBuildLineErrorWithEmptyLines(c *check.C) {
+	name := "test_build_line_error_with_empty_lines"
+
+	_, err := buildImage(name,
+		`
+  FROM busybox
+
+  RUN echo hello world
+
+  NOINSTRUCTION echo ba
+
+  CMD ["/bin/init"]
+  `, true)
+	c.Assert(err.Error(), checker.Contains, "Dockerfile parse error line 6: Unknown instruction: NOINSTRUCTION")
+}
+
+func (s *DockerSuite) TestBuildLineErrorWithComments(c *check.C) {
+	name := "test_build_line_error_with_comments"
+
+	_, err := buildImage(name,
+		`FROM busybox
+  # This will print hello world
+  # and then ba
+  RUN echo hello world
+  RUM echo ba
+  `, true)
+	c.Assert(err.Error(), checker.Contains, "Dockerfile parse error line 5: Unknown instruction: RUM")
 }

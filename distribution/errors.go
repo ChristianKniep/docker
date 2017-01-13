@@ -6,6 +6,7 @@ import (
 	"syscall"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/docker/distribution"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/docker/distribution/registry/api/v2"
 	"github.com/docker/distribution/registry/client"
@@ -59,21 +60,25 @@ func shouldV2Fallback(err errcode.Error) bool {
 	return false
 }
 
-func translatePullError(err error, ref reference.Named) error {
+// TranslatePullError is used to convert an error from a registry pull
+// operation to an error representing the entire pull operation. Any error
+// information which is not used by the returned error gets output to
+// log at info level.
+func TranslatePullError(err error, ref reference.Named) error {
 	switch v := err.(type) {
 	case errcode.Errors:
 		if len(v) != 0 {
 			for _, extra := range v[1:] {
 				logrus.Infof("Ignoring extra error returned from registry: %v", extra)
 			}
-			return translatePullError(v[0], ref)
+			return TranslatePullError(v[0], ref)
 		}
 	case errcode.Error:
 		var newErr error
 		switch v.Code {
 		case errcode.ErrorCodeDenied:
 			// ErrorCodeDenied is used when access to the repository was denied
-			newErr = errors.Errorf("repository %s not found: does not exist or no read access", ref.Name())
+			newErr = errors.Errorf("repository %s not found: does not exist or no pull access", ref.Name())
 		case v2.ErrorCodeManifestUnknown:
 			newErr = errors.Errorf("manifest for %s not found", ref.String())
 		case v2.ErrorCodeNameUnknown:
@@ -84,7 +89,7 @@ func translatePullError(err error, ref reference.Named) error {
 			return newErr
 		}
 	case xfer.DoNotRetry:
-		return translatePullError(v.Err, ref)
+		return TranslatePullError(v.Err, ref)
 	}
 
 	return err
@@ -139,6 +144,9 @@ func retryOnError(err error) error {
 	case *client.UnexpectedHTTPResponseError:
 		return xfer.DoNotRetry{Err: err}
 	case error:
+		if err == distribution.ErrBlobUnknown {
+			return xfer.DoNotRetry{Err: err}
+		}
 		if strings.Contains(err.Error(), strings.ToLower(syscall.ENOSPC.Error())) {
 			return xfer.DoNotRetry{Err: err}
 		}

@@ -27,7 +27,7 @@ var (
 	flUnregisterService *bool
 	flRunService        *bool
 
-	setStdHandle = syscall.NewLazyDLL("kernel32.dll").NewProc("SetStdHandle")
+	setStdHandle = windows.NewLazySystemDLL("kernel32.dll").NewProc("SetStdHandle")
 	oldStderr    syscall.Handle
 	panicFile    *os.File
 
@@ -219,12 +219,7 @@ func registerService() error {
 		return err
 	}
 
-	err = eventlog.Install(*flServiceName, p, false, eventlog.Info|eventlog.Warning|eventlog.Error)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return eventlog.Install(*flServiceName, p, false, eventlog.Info|eventlog.Warning|eventlog.Error)
 }
 
 func unregisterService() error {

@@ -41,8 +41,8 @@ message NodeSpec {
 		DRAIN = 2 [(gogoproto.enumvalue_customname) = "NodeAvailabilityDrain"];
 	}
 
-	// Role defines the role the node should have.
-	NodeRole role = 2;
+	// DesiredRole defines the role the node should have.
+	NodeRole desired_role = 2;
 
 	// Membership controls the admission of the node into the cluster.
 	Membership membership = 3;
@@ -115,7 +115,7 @@ message TaskSpec {
 
 	// ForceUpdate is a counter that triggers an update even if no relevant
 	// parameters have been changed. We do this to allow forced restarts
-	// using the same reconcilation-based mechanism that performs rolling
+	// using the same reconciliation-based mechanism that performs rolling
 	// updates.
 	uint64 force_update = 9;
 }

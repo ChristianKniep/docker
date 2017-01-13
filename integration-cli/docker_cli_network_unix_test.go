@@ -16,9 +16,10 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/versions/v1p20"
-	"github.com/docker/docker/pkg/integration/checker"
-	icmd "github.com/docker/docker/pkg/integration/cmd"
+	"github.com/docker/docker/integration-cli/checker"
+	"github.com/docker/docker/integration-cli/daemon"
 	"github.com/docker/docker/pkg/stringid"
+	icmd "github.com/docker/docker/pkg/testutil/cmd"
 	"github.com/docker/docker/runconfig"
 	"github.com/docker/libnetwork/driverapi"
 	remoteapi "github.com/docker/libnetwork/drivers/remote/api"
@@ -43,16 +44,20 @@ func init() {
 type DockerNetworkSuite struct {
 	server *httptest.Server
 	ds     *DockerSuite
-	d      *Daemon
+	d      *daemon.Daemon
 }
 
 func (s *DockerNetworkSuite) SetUpTest(c *check.C) {
-	s.d = NewDaemon(c)
+	s.d = daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
+		Experimental: experimentalDaemon,
+	})
 }
 
 func (s *DockerNetworkSuite) TearDownTest(c *check.C) {
-	s.d.Stop()
-	s.ds.TearDownTest(c)
+	if s.d != nil {
+		s.d.Stop(c)
+		s.ds.TearDownTest(c)
+	}
 }
 
 func (s *DockerNetworkSuite) SetUpSuite(c *check.C) {
@@ -712,7 +717,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkInspectCustomUnspecified(c *check.
 }
 
 func (s *DockerNetworkSuite) TestDockerNetworkInspectCustomSpecified(c *check.C) {
-	dockerCmd(c, "network", "create", "--driver=bridge", "--ipv6", "--subnet=172.28.0.0/16", "--ip-range=172.28.5.0/24", "--gateway=172.28.5.254", "br0")
+	dockerCmd(c, "network", "create", "--driver=bridge", "--ipv6", "--subnet=fd80:24e2:f998:72d6::/64", "--subnet=172.28.0.0/16", "--ip-range=172.28.5.0/24", "--gateway=172.28.5.254", "br0")
 	assertNwIsAvailable(c, "br0")
 
 	nr := getNetworkResource(c, "br0")
@@ -721,7 +726,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkInspectCustomSpecified(c *check.C)
 	c.Assert(nr.Internal, checker.Equals, false)
 	c.Assert(nr.EnableIPv6, checker.Equals, true)
 	c.Assert(nr.IPAM.Driver, checker.Equals, "default")
-	c.Assert(len(nr.IPAM.Config), checker.Equals, 1)
+	c.Assert(len(nr.IPAM.Config), checker.Equals, 2)
 	c.Assert(nr.IPAM.Config[0].Subnet, checker.Equals, "172.28.0.0/16")
 	c.Assert(nr.IPAM.Config[0].IPRange, checker.Equals, "172.28.5.0/24")
 	c.Assert(nr.IPAM.Config[0].Gateway, checker.Equals, "172.28.5.254")
@@ -769,10 +774,10 @@ func (s *DockerNetworkSuite) TestDockerNetworkDriverOptions(c *check.C) {
 }
 
 func (s *DockerNetworkSuite) TestDockerPluginV2NetworkDriver(c *check.C) {
-	testRequires(c, DaemonIsLinux, Network, IsAmd64)
+	testRequires(c, DaemonIsLinux, IsAmd64, Network)
 
 	var (
-		npName        = "mavenugo/test-docker-netplugin"
+		npName        = "tiborvass/test-docker-netplugin"
 		npTag         = "latest"
 		npNameWithTag = npName + ":" + npTag
 	)
@@ -798,16 +803,14 @@ func (s *DockerDaemonSuite) TestDockerNetworkNoDiscoveryDefaultBridgeNetwork(c *
 	hostsFile := "/etc/hosts"
 	bridgeName := "external-bridge"
 	bridgeIP := "192.169.255.254/24"
-	out, err := createInterface(c, "bridge", bridgeName, bridgeIP)
-	c.Assert(err, check.IsNil, check.Commentf(out))
+	createInterface(c, "bridge", bridgeName, bridgeIP)
 	defer deleteInterface(c, bridgeName)
 
-	err = s.d.StartWithBusybox("--bridge", bridgeName)
-	c.Assert(err, check.IsNil)
-	defer s.d.Restart()
+	s.d.StartWithBusybox(c, "--bridge", bridgeName)
+	defer s.d.Restart(c)
 
 	// run two containers and store first container's etc/hosts content
-	out, err = s.d.Cmd("run", "-d", "busybox", "top")
+	out, err := s.d.Cmd("run", "-d", "busybox", "top")
 	c.Assert(err, check.IsNil)
 	cid1 := strings.TrimSpace(out)
 	defer s.d.Cmd("stop", cid1)
@@ -984,7 +987,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkDriverUngracefulRestart(c *check.C
 	server := httptest.NewServer(mux)
 	setupRemoteNetworkDrivers(c, mux, server.URL, dnd, did)
 
-	s.d.StartWithBusybox()
+	s.d.StartWithBusybox(c)
 	_, err := s.d.Cmd("network", "create", "-d", dnd, "--subnet", "1.1.1.0/24", "net1")
 	c.Assert(err, checker.IsNil)
 
@@ -992,16 +995,12 @@ func (s *DockerNetworkSuite) TestDockerNetworkDriverUngracefulRestart(c *check.C
 	c.Assert(err, checker.IsNil)
 
 	// Kill daemon and restart
-	if err = s.d.cmd.Process.Kill(); err != nil {
-		c.Fatal(err)
-	}
+	c.Assert(s.d.Kill(), checker.IsNil)
 
 	server.Close()
 
 	startTime := time.Now().Unix()
-	if err = s.d.Restart(); err != nil {
-		c.Fatal(err)
-	}
+	s.d.Restart(c)
 	lapse := time.Now().Unix() - startTime
 	if lapse > 60 {
 		// In normal scenarios, daemon restart takes ~1 second.
@@ -1062,7 +1061,7 @@ func (s *DockerSuite) TestInspectAPIMultipleNetworks(c *check.C) {
 	c.Assert(bridge.IPAddress, checker.Equals, inspect121.NetworkSettings.IPAddress)
 }
 
-func connectContainerToNetworks(c *check.C, d *Daemon, cName string, nws []string) {
+func connectContainerToNetworks(c *check.C, d *daemon.Daemon, cName string, nws []string) {
 	// Run a container on the default network
 	out, err := d.Cmd("run", "-d", "--name", cName, "busybox", "top")
 	c.Assert(err, checker.IsNil, check.Commentf(out))
@@ -1076,7 +1075,7 @@ func connectContainerToNetworks(c *check.C, d *Daemon, cName string, nws []strin
 	}
 }
 
-func verifyContainerIsConnectedToNetworks(c *check.C, d *Daemon, cName string, nws []string) {
+func verifyContainerIsConnectedToNetworks(c *check.C, d *daemon.Daemon, cName string, nws []string) {
 	// Verify container is connected to all the networks
 	for _, nw := range nws {
 		out, err := d.Cmd("inspect", "-f", fmt.Sprintf("{{.NetworkSettings.Networks.%s}}", nw), cName)
@@ -1089,13 +1088,13 @@ func (s *DockerNetworkSuite) TestDockerNetworkMultipleNetworksGracefulDaemonRest
 	cName := "bb"
 	nwList := []string{"nw1", "nw2", "nw3"}
 
-	s.d.StartWithBusybox()
+	s.d.StartWithBusybox(c)
 
 	connectContainerToNetworks(c, s.d, cName, nwList)
 	verifyContainerIsConnectedToNetworks(c, s.d, cName, nwList)
 
 	// Reload daemon
-	s.d.Restart()
+	s.d.Restart(c)
 
 	_, err := s.d.Cmd("start", cName)
 	c.Assert(err, checker.IsNil)
@@ -1107,16 +1106,14 @@ func (s *DockerNetworkSuite) TestDockerNetworkMultipleNetworksUngracefulDaemonRe
 	cName := "cc"
 	nwList := []string{"nw1", "nw2", "nw3"}
 
-	s.d.StartWithBusybox()
+	s.d.StartWithBusybox(c)
 
 	connectContainerToNetworks(c, s.d, cName, nwList)
 	verifyContainerIsConnectedToNetworks(c, s.d, cName, nwList)
 
 	// Kill daemon and restart
-	if err := s.d.cmd.Process.Kill(); err != nil {
-		c.Fatal(err)
-	}
-	s.d.Restart()
+	c.Assert(s.d.Kill(), checker.IsNil)
+	s.d.Restart(c)
 
 	// Restart container
 	_, err := s.d.Cmd("start", cName)
@@ -1133,7 +1130,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkRunNetByID(c *check.C) {
 
 func (s *DockerNetworkSuite) TestDockerNetworkHostModeUngracefulDaemonRestart(c *check.C) {
 	testRequires(c, DaemonIsLinux, NotUserNamespace)
-	s.d.StartWithBusybox()
+	s.d.StartWithBusybox(c)
 
 	// Run a few containers on host network
 	for i := 0; i < 10; i++ {
@@ -1142,21 +1139,17 @@ func (s *DockerNetworkSuite) TestDockerNetworkHostModeUngracefulDaemonRestart(c 
 		c.Assert(err, checker.IsNil, check.Commentf(out))
 
 		// verfiy container has finished starting before killing daemon
-		err = s.d.waitRun(cName)
+		err = s.d.WaitRun(cName)
 		c.Assert(err, checker.IsNil)
 	}
 
 	// Kill daemon ungracefully and restart
-	if err := s.d.cmd.Process.Kill(); err != nil {
-		c.Fatal(err)
-	}
-	if err := s.d.Restart(); err != nil {
-		c.Fatal(err)
-	}
+	c.Assert(s.d.Kill(), checker.IsNil)
+	s.d.Restart(c)
 
 	// make sure all the containers are up and running
 	for i := 0; i < 10; i++ {
-		err := s.d.waitRun(fmt.Sprintf("hostc-%d", i))
+		err := s.d.WaitRun(fmt.Sprintf("hostc-%d", i))
 		c.Assert(err, checker.IsNil)
 	}
 }
@@ -1269,7 +1262,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkConnectDisconnectToStoppedContaine
 	c.Assert(networks, checker.Contains, "test", check.Commentf("Should contain 'test' network"))
 
 	// Restart docker daemon to test the config has persisted to disk
-	s.d.Restart()
+	s.d.Restart(c)
 	networks = inspectField(c, "foo", "NetworkSettings.Networks")
 	c.Assert(networks, checker.Contains, "test", check.Commentf("Should contain 'test' network"))
 
@@ -1288,7 +1281,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkConnectDisconnectToStoppedContaine
 	c.Assert(networks, checker.Not(checker.Contains), "test", check.Commentf("Should not contain 'test' network"))
 
 	// Restart docker daemon to test the config has persisted to disk
-	s.d.Restart()
+	s.d.Restart(c)
 	networks = inspectField(c, "foo", "NetworkSettings.Networks")
 	c.Assert(networks, checker.Not(checker.Contains), "test", check.Commentf("Should not contain 'test' network"))
 
@@ -1419,7 +1412,7 @@ func verifyIPAddresses(c *check.C, cName, nwname, ipv4, ipv6 string) {
 
 func (s *DockerNetworkSuite) TestDockerNetworkConnectLinkLocalIP(c *check.C) {
 	// create one test network
-	dockerCmd(c, "network", "create", "n0")
+	dockerCmd(c, "network", "create", "--ipv6", "--subnet=2001:db8:1234::/64", "n0")
 	assertNwIsAvailable(c, "n0")
 
 	// run a container with incorrect link-local address
@@ -1669,10 +1662,8 @@ func (s *DockerNetworkSuite) TestDockerNetworkCreateDeleteSpecialCharacters(c *c
 
 func (s *DockerDaemonSuite) TestDaemonRestartRestoreBridgeNetwork(t *check.C) {
 	testRequires(t, DaemonIsLinux)
-	if err := s.d.StartWithBusybox("--live-restore"); err != nil {
-		t.Fatal(err)
-	}
-	defer s.d.Stop()
+	s.d.StartWithBusybox(t, "--live-restore")
+	defer s.d.Stop(t)
 	oldCon := "old"
 
 	_, err := s.d.Cmd("run", "-d", "--name", oldCon, "-p", "80:80", "busybox", "top")
@@ -1689,9 +1680,7 @@ func (s *DockerDaemonSuite) TestDaemonRestartRestoreBridgeNetwork(t *check.C) {
 	}
 
 	// restart the daemon
-	if err := s.d.Start("--live-restore"); err != nil {
-		t.Fatal(err)
-	}
+	s.d.Start(t, "--live-restore")
 
 	// start a new container, the new container's ip should not be the same with
 	// old running container.

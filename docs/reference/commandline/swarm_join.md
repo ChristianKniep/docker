@@ -21,10 +21,11 @@ Usage:  docker swarm join [OPTIONS] HOST:PORT
 Join a swarm as a node and/or manager
 
 Options:
-      --advertise-addr value   Advertised address (format: <ip|interface>[:port])
-      --help                   Print usage
-      --listen-addr value      Listen address (format: <ip|interface>[:port)
-      --token string           Token for entry into the swarm
+      --advertise-addr string   Advertised address (format: <ip|interface>[:port])
+      --availability string     Availability of the node (active/pause/drain) (default "active")
+      --help                    Print usage
+      --listen-addr node-addr   Listen address (format: <ip|interface>[:port]) (default 0.0.0.0:2377)
+      --token string            Token for entry into the swarm
 ```
 
 Join a node to a swarm. The node joins as a manager node or worker node based upon the token you
@@ -77,7 +78,7 @@ This flag is generally not necessary when joining an existing swarm.
 
 This flag specifies the address that will be advertised to other members of the
 swarm for API access. If unspecified, Docker will check if the system has a
-single IP address, and use that IP address with with the listening port (see
+single IP address, and use that IP address with the listening port (see
 `--listen-addr`). If the system has multiple IP addresses, `--advertise-addr`
 must be specified so that the correct address is chosen for inter-manager
 communication and overlay networking.
@@ -94,9 +95,21 @@ This flag is generally not necessary when joining an existing swarm.
 
 Secret value required for nodes to join the swarm
 
+### `--availability`
+
+This flag specifies the availability of the node at the time the node joins a master.
+Possible availability values are `active`, `pause`, or `drain`.
+
+This flag is useful in certain situations. For example, a cluster may want to have
+dedicated manager nodes that are not served as worker nodes. This could be achieved
+by passing `--availability=drain` to `docker swarm join`.
+
 
 ## Related information
 
 * [swarm init](swarm_init.md)
+* [swarm join-token](swarm_join_token.md)
 * [swarm leave](swarm_leave.md)
+* [swarm unlock](swarm_unlock.md)
+* [swarm unlock-key](swarm_unlock_key.md)
 * [swarm update](swarm_update.md)

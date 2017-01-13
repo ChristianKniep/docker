@@ -125,15 +125,18 @@ Service Mode:	REPLICATED
 Placement:
 UpdateConfig:
  Parallelism:	0
+ On failure:	pause
+ Max failure ratio:	0
 ContainerSpec:
  Image:		nginx:alpine
 Resources:
+Networks:	net1
 Endpoint Mode:  vip
 Ports:
- Name =
- Protocol = tcp
- TargetPort = 443
  PublishedPort = 4443
+  Protocol = tcp
+  TargetPort = 443
+  PublishMode = ingress
 ```
 
 You can also use `--format pretty` for the same effect.
@@ -154,6 +157,7 @@ $ docker service inspect --format='{{.Spec.Mode.Replicated.Replicas}}' redis
 ## Related information
 
 * [service create](service_create.md)
+* [service logs](service_logs.md)
 * [service ls](service_ls.md)
 * [service rm](service_rm.md)
 * [service scale](service_scale.md)

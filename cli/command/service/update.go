@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/context"
-
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	mounttypes "github.com/docker/docker/api/types/mount"
@@ -21,10 +19,11 @@ import (
 	shlex "github.com/flynn-archive/go-shlex"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/net/context"
 )
 
 func newUpdateCommand(dockerCli *command.DockerCli) *cobra.Command {
-	opts := newServiceOptions()
+	serviceOpts := newServiceOptions()
 
 	cmd := &cobra.Command{
 		Use:   "update [OPTIONS] SERVICE",
@@ -40,36 +39,33 @@ func newUpdateCommand(dockerCli *command.DockerCli) *cobra.Command {
 	flags.String("args", "", "Service command args")
 	flags.Bool("rollback", false, "Rollback to previous specification")
 	flags.Bool("force", false, "Force update even if no changes require it")
-	addServiceFlags(cmd, opts)
+	addServiceFlags(cmd, serviceOpts)
 
 	flags.Var(newListOptsVar(), flagEnvRemove, "Remove an environment variable")
 	flags.Var(newListOptsVar(), flagGroupRemove, "Remove a previously added supplementary user group from the container")
 	flags.Var(newListOptsVar(), flagLabelRemove, "Remove a label by its key")
 	flags.Var(newListOptsVar(), flagContainerLabelRemove, "Remove a container label by its key")
 	flags.Var(newListOptsVar(), flagMountRemove, "Remove a mount by its target path")
-	flags.Var(newListOptsVar(), flagPublishRemove, "Remove a published port by its target port")
-	flags.MarkHidden(flagPublishRemove)
-	flags.Var(newListOptsVar(), flagPortRemove, "Remove a port(target-port mandatory)")
+	// flags.Var(newListOptsVar().WithValidator(validatePublishRemove), flagPublishRemove, "Remove a published port by its target port")
+	flags.Var(&opts.PortOpt{}, flagPublishRemove, "Remove a published port by its target port")
 	flags.Var(newListOptsVar(), flagConstraintRemove, "Remove a constraint")
 	flags.Var(newListOptsVar(), flagDNSRemove, "Remove a custom DNS server")
 	flags.Var(newListOptsVar(), flagDNSOptionRemove, "Remove a DNS option")
 	flags.Var(newListOptsVar(), flagDNSSearchRemove, "Remove a DNS search domain")
 	flags.Var(newListOptsVar(), flagHostRemove, "Remove a custom host-to-IP mapping (host:ip)")
-	flags.Var(&opts.labels, flagLabelAdd, "Add or update a service label")
-	flags.Var(&opts.containerLabels, flagContainerLabelAdd, "Add or update a container label")
-	flags.Var(&opts.env, flagEnvAdd, "Add or update an environment variable")
+	flags.Var(&serviceOpts.labels, flagLabelAdd, "Add or update a service label")
+	flags.Var(&serviceOpts.containerLabels, flagContainerLabelAdd, "Add or update a container label")
+	flags.Var(&serviceOpts.env, flagEnvAdd, "Add or update an environment variable")
 	flags.Var(newListOptsVar(), flagSecretRemove, "Remove a secret")
-	flags.Var(&opts.secrets, flagSecretAdd, "Add or update a secret on a service")
-	flags.Var(&opts.mounts, flagMountAdd, "Add or update a mount on a service")
-	flags.Var(&opts.constraints, flagConstraintAdd, "Add or update a placement constraint")
-	flags.Var(&opts.endpoint.publishPorts, flagPublishAdd, "Add or update a published port")
-	flags.MarkHidden(flagPublishAdd)
-	flags.Var(&opts.endpoint.expandedPorts, flagPortAdd, "Add or update a port")
-	flags.Var(&opts.groups, flagGroupAdd, "Add an additional supplementary user group to the container")
-	flags.Var(&opts.dns, flagDNSAdd, "Add or update a custom DNS server")
-	flags.Var(&opts.dnsOption, flagDNSOptionAdd, "Add or update a DNS option")
-	flags.Var(&opts.dnsSearch, flagDNSSearchAdd, "Add or update a custom DNS search domain")
-	flags.Var(&opts.hosts, flagHostAdd, "Add or update a custom host-to-IP mapping (host:ip)")
+	flags.Var(&serviceOpts.secrets, flagSecretAdd, "Add or update a secret on a service")
+	flags.Var(&serviceOpts.mounts, flagMountAdd, "Add or update a mount on a service")
+	flags.Var(&serviceOpts.constraints, flagConstraintAdd, "Add or update a placement constraint")
+	flags.Var(&serviceOpts.endpoint.publishPorts, flagPublishAdd, "Add or update a published port")
+	flags.Var(&serviceOpts.groups, flagGroupAdd, "Add an additional supplementary user group to the container")
+	flags.Var(&serviceOpts.dns, flagDNSAdd, "Add or update a custom DNS server")
+	flags.Var(&serviceOpts.dnsOption, flagDNSOptionAdd, "Add or update a DNS option")
+	flags.Var(&serviceOpts.dnsSearch, flagDNSSearchAdd, "Add or update a custom DNS search domain")
+	flags.Var(&serviceOpts.hosts, flagHostAdd, "Add or update a custom host-to-IP mapping (host:ip)")
 
 	return cmd
 }
@@ -104,6 +100,12 @@ func runUpdate(dockerCli *command.DockerCli, flags *pflag.FlagSet, serviceID str
 	err = updateService(flags, spec)
 	if err != nil {
 		return err
+	}
+
+	if flags.Changed("image") {
+		if err := resolveServiceImageDigest(dockerCli, spec); err != nil {
+			return err
+		}
 	}
 
 	updatedSecrets, err := getUpdatedSecrets(apiClient, flags, spec.TaskTemplate.ContainerSpec.Secrets)
@@ -208,6 +210,7 @@ func updateService(flags *pflag.FlagSet, spec *swarm.ServiceSpec) error {
 	updateEnvironment(flags, &cspec.Env)
 	updateString(flagWorkdir, &cspec.Dir)
 	updateString(flagUser, &cspec.User)
+	updateString(flagHostname, &cspec.Hostname)
 	if err := updateMounts(flags, &cspec.Mounts); err != nil {
 		return err
 	}
@@ -275,7 +278,7 @@ func updateService(flags *pflag.FlagSet, spec *swarm.ServiceSpec) error {
 		}
 	}
 
-	if anyChanged(flags, flagPublishAdd, flagPublishRemove, flagPortAdd, flagPortRemove) {
+	if anyChanged(flags, flagPublishAdd, flagPublishRemove) {
 		if spec.EndpointSpec == nil {
 			spec.EndpointSpec = &swarm.EndpointSpec{}
 		}
@@ -427,7 +430,16 @@ func updateEnvironment(flags *pflag.FlagSet, field *[]string) {
 	*field = removeItems(*field, toRemove, envKey)
 }
 
-func getUpdatedSecrets(apiClient client.APIClient, flags *pflag.FlagSet, secrets []*swarm.SecretReference) ([]*swarm.SecretReference, error) {
+func getUpdatedSecrets(apiClient client.SecretAPIClient, flags *pflag.FlagSet, secrets []*swarm.SecretReference) ([]*swarm.SecretReference, error) {
+	newSecrets := []*swarm.SecretReference{}
+
+	toRemove := buildToRemoveSet(flags, flagSecretRemove)
+	for _, secret := range secrets {
+		if _, exists := toRemove[secret.SecretName]; !exists {
+			newSecrets = append(newSecrets, secret)
+		}
+	}
+
 	if flags.Changed(flagSecretAdd) {
 		values := flags.Lookup(flagSecretAdd).Value.(*opts.SecretOpt).Value()
 
@@ -435,14 +447,7 @@ func getUpdatedSecrets(apiClient client.APIClient, flags *pflag.FlagSet, secrets
 		if err != nil {
 			return nil, err
 		}
-		secrets = append(secrets, addSecrets...)
-	}
-	toRemove := buildToRemoveSet(flags, flagSecretRemove)
-	newSecrets := []*swarm.SecretReference{}
-	for _, secret := range secrets {
-		if _, exists := toRemove[secret.SecretName]; !exists {
-			newSecrets = append(newSecrets, secret)
-		}
+		newSecrets = append(newSecrets, addSecrets...)
 	}
 
 	return newSecrets, nil
@@ -632,73 +637,46 @@ func (r byPortConfig) Less(i, j int) bool {
 
 func portConfigToString(portConfig *swarm.PortConfig) string {
 	protocol := portConfig.Protocol
-	if protocol == "" {
-		protocol = "tcp"
-	}
-
 	mode := portConfig.PublishMode
-	if mode == "" {
-		mode = "ingress"
-	}
-
 	return fmt.Sprintf("%v:%v/%s/%s", portConfig.PublishedPort, portConfig.TargetPort, protocol, mode)
+}
+
+// FIXME(vdemeester) port to opts.PortOpt
+// This validation is only used for `--publish-rm`.
+// The `--publish-rm` takes:
+// <TargetPort>[/<Protocol>] (e.g., 80, 80/tcp, 53/udp)
+func validatePublishRemove(val string) (string, error) {
+	proto, port := nat.SplitProtoPort(val)
+	if proto != "tcp" && proto != "udp" {
+		return "", fmt.Errorf("invalid protocol '%s' for %s", proto, val)
+	}
+	if strings.Contains(port, ":") {
+		return "", fmt.Errorf("invalid port format: '%s', should be <TargetPort>[/<Protocol>] (e.g., 80, 80/tcp, 53/udp)", port)
+	}
+	if _, err := nat.ParsePort(port); err != nil {
+		return "", err
+	}
+	return val, nil
 }
 
 func updatePorts(flags *pflag.FlagSet, portConfig *[]swarm.PortConfig) error {
 	// The key of the map is `port/protocol`, e.g., `80/tcp`
 	portSet := map[string]swarm.PortConfig{}
-	// Check to see if there are any conflict in flags.
-	if flags.Changed(flagPublishAdd) {
-		values := flags.Lookup(flagPublishAdd).Value.(*opts.ListOpts).GetAll()
-		ports, portBindings, _ := nat.ParsePortSpecs(values)
 
-		for port := range ports {
-			newConfigs := ConvertPortToPortConfig(port, portBindings)
-			for _, entry := range newConfigs {
-				if v, ok := portSet[portConfigToString(&entry)]; ok && v != entry {
-					return fmt.Errorf("conflicting port mapping between %v:%v/%s and %v:%v/%s", entry.PublishedPort, entry.TargetPort, entry.Protocol, v.PublishedPort, v.TargetPort, v.Protocol)
-				}
-				portSet[portConfigToString(&entry)] = entry
-			}
-		}
-	}
-
-	if flags.Changed(flagPortAdd) {
-		for _, entry := range flags.Lookup(flagPortAdd).Value.(*opts.PortOpt).Value() {
-			if v, ok := portSet[portConfigToString(&entry)]; ok && v != entry {
-				return fmt.Errorf("conflicting port mapping between %v:%v/%s and %v:%v/%s", entry.PublishedPort, entry.TargetPort, entry.Protocol, v.PublishedPort, v.TargetPort, v.Protocol)
-			}
-			portSet[portConfigToString(&entry)] = entry
-		}
-	}
-
-	// Override previous PortConfig in service if there is any duplicate
+	// Build the current list of portConfig
 	for _, entry := range *portConfig {
 		if _, ok := portSet[portConfigToString(&entry)]; !ok {
 			portSet[portConfigToString(&entry)] = entry
 		}
 	}
 
-	toRemove := flags.Lookup(flagPublishRemove).Value.(*opts.ListOpts).GetAll()
-	removePortCSV := flags.Lookup(flagPortRemove).Value.(*opts.ListOpts).GetAll()
-	removePortOpts := &opts.PortOpt{}
-	for _, portCSV := range removePortCSV {
-		if err := removePortOpts.Set(portCSV); err != nil {
-			return err
-		}
-	}
-
 	newPorts := []swarm.PortConfig{}
+
+	// Clean current ports
+	toRemove := flags.Lookup(flagPublishRemove).Value.(*opts.PortOpt).Value()
 portLoop:
 	for _, port := range portSet {
-		for _, rawTargetPort := range toRemove {
-			targetPort := nat.Port(rawTargetPort)
-			if equalPort(targetPort, port) {
-				continue portLoop
-			}
-		}
-
-		for _, pConfig := range removePortOpts.Value() {
+		for _, pConfig := range toRemove {
 			if equalProtocol(port.Protocol, pConfig.Protocol) &&
 				port.TargetPort == pConfig.TargetPort &&
 				equalPublishMode(port.PublishMode, pConfig.PublishMode) {
@@ -707,6 +685,19 @@ portLoop:
 		}
 
 		newPorts = append(newPorts, port)
+	}
+
+	// Check to see if there are any conflict in flags.
+	if flags.Changed(flagPublishAdd) {
+		ports := flags.Lookup(flagPublishAdd).Value.(*opts.PortOpt).Value()
+
+		for _, port := range ports {
+			if _, ok := portSet[portConfigToString(&port)]; ok {
+				continue
+			}
+			//portSet[portConfigToString(&port)] = port
+			newPorts = append(newPorts, port)
+		}
 	}
 
 	// Sort the PortConfig to avoid unnecessary updates

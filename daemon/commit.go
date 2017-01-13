@@ -46,6 +46,11 @@ func merge(userConf, imageConf *containertypes.Config) error {
 			imageEnvKey := strings.Split(imageEnv, "=")[0]
 			for _, userEnv := range userConf.Env {
 				userEnvKey := strings.Split(userEnv, "=")[0]
+				if runtime.GOOS == "windows" {
+					// Case insensitive environment variables on Windows
+					imageEnvKey = strings.ToUpper(imageEnvKey)
+					userEnvKey = strings.ToUpper(userEnvKey)
+				}
 				if imageEnvKey == userEnvKey {
 					found = true
 					break
@@ -60,11 +65,10 @@ func merge(userConf, imageConf *containertypes.Config) error {
 	if userConf.Labels == nil {
 		userConf.Labels = map[string]string{}
 	}
-	if imageConf.Labels != nil {
-		for l := range userConf.Labels {
-			imageConf.Labels[l] = userConf.Labels[l]
+	for l, v := range imageConf.Labels {
+		if _, ok := userConf.Labels[l]; !ok {
+			userConf.Labels[l] = v
 		}
-		userConf.Labels = imageConf.Labels
 	}
 
 	if len(userConf.Entrypoint) == 0 {

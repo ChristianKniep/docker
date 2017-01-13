@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/docker/docker/pkg/integration/checker"
-	icmd "github.com/docker/docker/pkg/integration/cmd"
+	"github.com/docker/docker/integration-cli/checker"
+	"github.com/docker/docker/pkg/testutil"
+	icmd "github.com/docker/docker/pkg/testutil/cmd"
 	"github.com/go-check/check"
 )
 
@@ -545,7 +546,7 @@ func (s *DockerSuite) TestCpToStdout(c *check.C) {
 	// failed to set up container
 	c.Assert(strings.TrimSpace(out), checker.Equals, "0")
 
-	out, _, err := runCommandPipelineWithOutput(
+	out, _, err := testutil.RunCommandPipelineWithOutput(
 		exec.Command(dockerBinary, "cp", containerID+":/test", "-"),
 		exec.Command("tar", "-vtf", "-"))
 

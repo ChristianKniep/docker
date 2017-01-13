@@ -29,7 +29,7 @@ const (
 type Driver interface {
 	// Name returns the name of the volume driver.
 	Name() string
-	// Create makes a new volume with the given id.
+	// Create makes a new volume with the given name.
 	Create(name string, opts map[string]string) (Volume, error)
 	// Remove deletes the volume.
 	Remove(vol Volume) (err error)
@@ -216,7 +216,7 @@ func ParseMountRaw(raw, volumeDriver string) (*MountPoint, error) {
 	case 2:
 		if ValidMountMode(arr[1]) {
 			// Destination + Mode is not a valid volume - volumes
-			// cannot include a mode. eg /foo:rw
+			// cannot include a mode. e.g. /foo:rw
 			return nil, errInvalidSpec(raw)
 		}
 		// Host Source Path or Name + Destination

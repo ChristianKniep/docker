@@ -6,7 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/docker/docker/pkg/integration/checker"
+	"github.com/docker/docker/integration-cli/checker"
+	"github.com/docker/docker/pkg/testutil"
 	"github.com/docker/docker/runconfig"
 	"github.com/go-check/check"
 )
@@ -101,7 +102,7 @@ func (s *DockerSuite) TestLinksInspectLinksStarted(c *check.C) {
 	err := json.Unmarshal([]byte(links), &result)
 	c.Assert(err, checker.IsNil)
 
-	output := convertSliceOfStringsToMap(result)
+	output := testutil.ConvertSliceOfStringsToMap(result)
 
 	c.Assert(output, checker.DeepEquals, expected)
 }
@@ -120,7 +121,7 @@ func (s *DockerSuite) TestLinksInspectLinksStopped(c *check.C) {
 	err := json.Unmarshal([]byte(links), &result)
 	c.Assert(err, checker.IsNil)
 
-	output := convertSliceOfStringsToMap(result)
+	output := testutil.ConvertSliceOfStringsToMap(result)
 
 	c.Assert(output, checker.DeepEquals, expected)
 }

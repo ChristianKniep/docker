@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/distribution/digest"
 	"github.com/docker/docker/daemon/graphdriver"
 	"github.com/docker/docker/daemon/graphdriver/vfs"
 	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/idtools"
 	"github.com/docker/docker/pkg/stringid"
+	"github.com/opencontainers/go-digest"
 )
 
 func init() {
@@ -39,7 +39,8 @@ func newVFSGraphDriver(td string) (graphdriver.Driver, error) {
 		},
 	}
 
-	return graphdriver.GetDriver("vfs", td, nil, uidMap, gidMap, nil)
+	options := graphdriver.Options{Root: td, UIDMaps: uidMap, GIDMaps: gidMap}
+	return graphdriver.GetDriver("vfs", nil, options)
 }
 
 func newTestGraphDriver(t *testing.T) (graphdriver.Driver, func()) {

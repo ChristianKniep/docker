@@ -2,7 +2,6 @@
 title: "stack ls"
 description: "The stack ls command description and usage"
 keywords: "stack, ls"
-advisory: "experimental"
 ---
 
 <!-- This file is maintained within the docker/docker Github
@@ -14,12 +13,18 @@ advisory: "experimental"
      will be rejected.
 -->
 
-# stack ls (experimental)
+# stack ls
 
 ```markdown
 Usage:	docker stack ls
 
 List stacks
+
+Aliases:
+  ls, list
+
+Options:
+      --help   Print usage
 ```
 
 Lists the stacks.
@@ -36,8 +41,7 @@ myapp              2
 
 ## Related information
 
-* [stack config](stack_config.md)
 * [stack deploy](stack_deploy.md)
-* [stack rm](stack_rm.md)
 * [stack ps](stack_ps.md)
+* [stack rm](stack_rm.md)
 * [stack services](stack_services.md)

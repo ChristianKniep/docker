@@ -1,10 +1,7 @@
 package service
 
 import (
-	"encoding/csv"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -84,7 +81,7 @@ func (d *DurationOpt) String() string {
 	if d.value != nil {
 		return d.value.String()
 	}
-	return "none"
+	return ""
 }
 
 // Value returns the time.Duration
@@ -114,7 +111,7 @@ func (i *Uint64Opt) String() string {
 	if i.value != nil {
 		return fmt.Sprintf("%v", *i.value)
 	}
-	return "none"
+	return ""
 }
 
 // Value returns the uint64
@@ -140,98 +137,6 @@ func (f *floatValue) String() string {
 
 func (f *floatValue) Value() float32 {
 	return float32(*f)
-}
-
-// SecretRequestSpec is a type for requesting secrets
-type SecretRequestSpec struct {
-	source string
-	target string
-	uid    string
-	gid    string
-	mode   os.FileMode
-}
-
-// SecretOpt is a Value type for parsing secrets
-type SecretOpt struct {
-	values []*SecretRequestSpec
-}
-
-// Set a new secret value
-func (o *SecretOpt) Set(value string) error {
-	csvReader := csv.NewReader(strings.NewReader(value))
-	fields, err := csvReader.Read()
-	if err != nil {
-		return err
-	}
-
-	spec := &SecretRequestSpec{
-		source: "",
-		target: "",
-		uid:    "0",
-		gid:    "0",
-		mode:   0444,
-	}
-
-	for _, field := range fields {
-		parts := strings.SplitN(field, "=", 2)
-		key := strings.ToLower(parts[0])
-
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid field '%s' must be a key=value pair", field)
-		}
-
-		value := parts[1]
-		switch key {
-		case "source":
-			spec.source = value
-		case "target":
-			tDir, _ := filepath.Split(value)
-			if tDir != "" {
-				return fmt.Errorf("target must not have a path")
-			}
-			spec.target = value
-		case "uid":
-			spec.uid = value
-		case "gid":
-			spec.gid = value
-		case "mode":
-			m, err := strconv.ParseUint(value, 0, 32)
-			if err != nil {
-				return fmt.Errorf("invalid mode specified: %v", err)
-			}
-
-			spec.mode = os.FileMode(m)
-		default:
-			return fmt.Errorf("invalid field in secret request: %s", key)
-		}
-	}
-
-	if spec.source == "" {
-		return fmt.Errorf("source is required")
-	}
-
-	o.values = append(o.values, spec)
-	return nil
-}
-
-// Type returns the type of this option
-func (o *SecretOpt) Type() string {
-	return "secret"
-}
-
-// String returns a string repr of this option
-func (o *SecretOpt) String() string {
-	secrets := []string{}
-	for _, secret := range o.values {
-		repr := fmt.Sprintf("%s -> %s", secret.source, secret.target)
-		secrets = append(secrets, repr)
-	}
-	return strings.Join(secrets, ", ")
-}
-
-// Value returns the secret requests
-func (o *SecretOpt) Value() []*SecretRequestSpec {
-	return o.values
 }
 
 type updateOptions struct {
@@ -287,43 +192,15 @@ func convertNetworks(networks []string) []swarm.NetworkAttachmentConfig {
 }
 
 type endpointOptions struct {
-	mode          string
-	publishPorts  opts.ListOpts
-	expandedPorts opts.PortOpt
+	mode         string
+	publishPorts opts.PortOpt
 }
 
 func (e *endpointOptions) ToEndpointSpec() *swarm.EndpointSpec {
-	portConfigs := []swarm.PortConfig{}
-	// We can ignore errors because the format was already validated by ValidatePort
-	ports, portBindings, _ := nat.ParsePortSpecs(e.publishPorts.GetAll())
-
-	for port := range ports {
-		portConfigs = append(portConfigs, ConvertPortToPortConfig(port, portBindings)...)
-	}
-
 	return &swarm.EndpointSpec{
 		Mode:  swarm.ResolutionMode(strings.ToLower(e.mode)),
-		Ports: append(portConfigs, e.expandedPorts.Value()...),
+		Ports: e.publishPorts.Value(),
 	}
-}
-
-// ConvertPortToPortConfig converts ports to the swarm type
-func ConvertPortToPortConfig(
-	port nat.Port,
-	portBindings map[nat.Port][]nat.PortBinding,
-) []swarm.PortConfig {
-	ports := []swarm.PortConfig{}
-
-	for _, binding := range portBindings[port] {
-		hostPort, _ := strconv.ParseUint(binding.HostPort, 10, 16)
-		ports = append(ports, swarm.PortConfig{
-			//TODO Name: ?
-			Protocol:      swarm.PortConfigProtocol(strings.ToLower(port.Proto())),
-			TargetPort:    uint32(port.Int()),
-			PublishedPort: uint32(hostPort),
-		})
-	}
-	return ports
 }
 
 type logDriverOptions struct {
@@ -332,7 +209,7 @@ type logDriverOptions struct {
 }
 
 func newLogDriverOptions() logDriverOptions {
-	return logDriverOptions{opts: opts.NewListOpts(runconfigopts.ValidateEnv)}
+	return logDriverOptions{opts: opts.NewListOpts(opts.ValidateEnv)}
 }
 
 func (ldo *logDriverOptions) toLogDriver() *swarm.Driver {
@@ -454,21 +331,18 @@ type serviceOptions struct {
 
 func newServiceOptions() *serviceOptions {
 	return &serviceOptions{
-		labels:          opts.NewListOpts(runconfigopts.ValidateEnv),
+		labels:          opts.NewListOpts(opts.ValidateEnv),
 		constraints:     opts.NewListOpts(nil),
-		containerLabels: opts.NewListOpts(runconfigopts.ValidateEnv),
-		env:             opts.NewListOpts(runconfigopts.ValidateEnv),
+		containerLabels: opts.NewListOpts(opts.ValidateEnv),
+		env:             opts.NewListOpts(opts.ValidateEnv),
 		envFile:         opts.NewListOpts(nil),
-		endpoint: endpointOptions{
-			publishPorts: opts.NewListOpts(ValidatePort),
-		},
-		groups:    opts.NewListOpts(nil),
-		logDriver: newLogDriverOptions(),
-		dns:       opts.NewListOpts(opts.ValidateIPAddress),
-		dnsOption: opts.NewListOpts(nil),
-		dnsSearch: opts.NewListOpts(opts.ValidateDNSSearch),
-		hosts:     opts.NewListOpts(runconfigopts.ValidateExtraHost),
-		networks:  opts.NewListOpts(nil),
+		groups:          opts.NewListOpts(nil),
+		logDriver:       newLogDriverOptions(),
+		dns:             opts.NewListOpts(opts.ValidateIPAddress),
+		dnsOption:       opts.NewListOpts(nil),
+		dnsSearch:       opts.NewListOpts(opts.ValidateDNSSearch),
+		hosts:           opts.NewListOpts(opts.ValidateExtraHost),
+		networks:        opts.NewListOpts(nil),
 	}
 }
 
@@ -570,19 +444,20 @@ func addServiceFlags(cmd *cobra.Command, opts *serviceOptions) {
 
 	flags.StringVarP(&opts.workdir, flagWorkdir, "w", "", "Working directory inside the container")
 	flags.StringVarP(&opts.user, flagUser, "u", "", "Username or UID (format: <name|uid>[:<group|gid>])")
+	flags.StringVar(&opts.hostname, flagHostname, "", "Container hostname")
 
 	flags.Var(&opts.resources.limitCPU, flagLimitCPU, "Limit CPUs")
 	flags.Var(&opts.resources.limitMemBytes, flagLimitMemory, "Limit Memory")
 	flags.Var(&opts.resources.resCPU, flagReserveCPU, "Reserve CPUs")
 	flags.Var(&opts.resources.resMemBytes, flagReserveMemory, "Reserve Memory")
-	flags.Var(&opts.stopGrace, flagStopGracePeriod, "Time to wait before force killing a container")
+	flags.Var(&opts.stopGrace, flagStopGracePeriod, "Time to wait before force killing a container (ns|us|ms|s|m|h)")
 
 	flags.Var(&opts.replicas, flagReplicas, "Number of tasks")
 
 	flags.StringVar(&opts.restartPolicy.condition, flagRestartCondition, "", "Restart when condition is met (none, on-failure, or any)")
-	flags.Var(&opts.restartPolicy.delay, flagRestartDelay, "Delay between restart attempts")
+	flags.Var(&opts.restartPolicy.delay, flagRestartDelay, "Delay between restart attempts (ns|us|ms|s|m|h)")
 	flags.Var(&opts.restartPolicy.maxAttempts, flagRestartMaxAttempts, "Maximum number of restarts before giving up")
-	flags.Var(&opts.restartPolicy.window, flagRestartWindow, "Window used to evaluate the restart policy")
+	flags.Var(&opts.restartPolicy.window, flagRestartWindow, "Window used to evaluate the restart policy (ns|us|ms|s|m|h)")
 
 	flags.Uint64Var(&opts.update.parallelism, flagUpdateParallelism, 1, "Maximum number of tasks updated simultaneously (0 to update all at once)")
 	flags.DurationVar(&opts.update.delay, flagUpdateDelay, time.Duration(0), "Delay between updates (ns|us|ms|s|m|h) (default 0s)")
@@ -598,8 +473,8 @@ func addServiceFlags(cmd *cobra.Command, opts *serviceOptions) {
 	flags.Var(&opts.logDriver.opts, flagLogOpt, "Logging driver options")
 
 	flags.StringVar(&opts.healthcheck.cmd, flagHealthCmd, "", "Command to run to check health")
-	flags.Var(&opts.healthcheck.interval, flagHealthInterval, "Time between running the check")
-	flags.Var(&opts.healthcheck.timeout, flagHealthTimeout, "Maximum time to allow one check to run")
+	flags.Var(&opts.healthcheck.interval, flagHealthInterval, "Time between running the check (ns|us|ms|s|m|h)")
+	flags.Var(&opts.healthcheck.timeout, flagHealthTimeout, "Maximum time to allow one check to run (ns|us|ms|s|m|h)")
 	flags.IntVar(&opts.healthcheck.retries, flagHealthRetries, 0, "Consecutive failures needed to report unhealthy")
 	flags.BoolVar(&opts.healthcheck.noHealthcheck, flagNoHealthcheck, false, "Disable any container-specified HEALTHCHECK")
 
@@ -648,9 +523,6 @@ const (
 	flagPublish               = "publish"
 	flagPublishRemove         = "publish-rm"
 	flagPublishAdd            = "publish-add"
-	flagPort                  = "port"
-	flagPortAdd               = "port-add"
-	flagPortRemove            = "port-rm"
 	flagReplicas              = "replicas"
 	flagReserveCPU            = "reserve-cpu"
 	flagReserveMemory         = "reserve-memory"

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"os"
@@ -20,11 +21,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/pkg/integration/checker"
-	icmd "github.com/docker/docker/pkg/integration/cmd"
+	"github.com/docker/docker/integration-cli/checker"
 	"github.com/docker/docker/pkg/mount"
 	"github.com/docker/docker/pkg/stringid"
 	"github.com/docker/docker/pkg/stringutils"
+	"github.com/docker/docker/pkg/testutil"
+	icmd "github.com/docker/docker/pkg/testutil/cmd"
 	"github.com/docker/docker/runconfig"
 	"github.com/docker/go-connections/nat"
 	"github.com/docker/libnetwork/resolvconf"
@@ -70,7 +72,7 @@ func (s *DockerSuite) TestRunLookupGoogleDNS(c *check.C) {
 		// nslookup isn't present in nanoserver. Hence just use PowerShell...
 		dockerCmd(c, "run", WindowsBaseImage, "powershell", "Resolve-DNSName", "google.com")
 	} else {
-		dockerCmd(c, "run", DefaultImage, "nslookup", "google.com")
+		dockerCmd(c, "run", "busybox", "nslookup", "google.com")
 	}
 
 }
@@ -91,12 +93,12 @@ func (s *DockerSuite) TestRunExitCodeOne(c *check.C) {
 func (s *DockerSuite) TestRunStdinPipe(c *check.C) {
 	// TODO Windows: This needs some work to make compatible.
 	testRequires(c, DaemonIsLinux)
-	runCmd := exec.Command(dockerBinary, "run", "-i", "-a", "stdin", "busybox", "cat")
-	runCmd.Stdin = strings.NewReader("blahblah")
-	out, _, _, err := runCommandWithStdoutStderr(runCmd)
-	if err != nil {
-		c.Fatalf("failed to run container: %v, output: %q", err, out)
-	}
+	result := icmd.RunCmd(icmd.Cmd{
+		Command: []string{dockerBinary, "run", "-i", "-a", "stdin", "busybox", "cat"},
+		Stdin:   strings.NewReader("blahblah"),
+	})
+	result.Assert(c, icmd.Success)
+	out := result.Stdout()
 
 	out = strings.TrimSpace(out)
 	dockerCmd(c, "wait", out)
@@ -375,7 +377,7 @@ func (s *DockerSuite) TestRunCreateVolumesInSymlinkDir(c *check.C) {
 		containerPath string
 		cmd           string
 	)
-	// TODO Windows (Post TP5): This test cannot run on a Windows daemon as
+	// This test cannot run on a Windows daemon as
 	// Windows does not support symlinks inside a volume path
 	testRequires(c, SameHostDaemon, DaemonIsLinux)
 	name := "test-volume-symlink"
@@ -422,7 +424,7 @@ func (s *DockerSuite) TestRunCreateVolumesInSymlinkDir2(c *check.C) {
 		containerPath string
 		cmd           string
 	)
-	// TODO Windows (Post TP5): This test cannot run on a Windows daemon as
+	// This test cannot run on a Windows daemon as
 	// Windows does not support symlinks inside a volume path
 	testRequires(c, SameHostDaemon, DaemonIsLinux)
 	name := "test-volume-symlink2"
@@ -444,20 +446,12 @@ func (s *DockerSuite) TestRunCreateVolumesInSymlinkDir2(c *check.C) {
 }
 
 func (s *DockerSuite) TestRunVolumesMountedAsReadonly(c *check.C) {
-	// TODO Windows: Temporary check - remove once TP5 support is dropped
-	if daemonPlatform == "windows" && windowsDaemonKV < 14350 {
-		c.Skip("Needs later Windows build for RO volumes")
-	}
 	if _, code, err := dockerCmdWithError("run", "-v", "/test:/test:ro", "busybox", "touch", "/test/somefile"); err == nil || code == 0 {
 		c.Fatalf("run should fail because volume is ro: exit code %d", code)
 	}
 }
 
 func (s *DockerSuite) TestRunVolumesFromInReadonlyModeFails(c *check.C) {
-	// TODO Windows: Temporary check - remove once TP5 support is dropped
-	if daemonPlatform == "windows" && windowsDaemonKV < 14350 {
-		c.Skip("Needs later Windows build for RO volumes")
-	}
 	var (
 		volumeDir string
 		fileInVol string
@@ -504,16 +498,12 @@ func (s *DockerSuite) TestRunVolumesFromInReadWriteMode(c *check.C) {
 func (s *DockerSuite) TestVolumesFromGetsProperMode(c *check.C) {
 	testRequires(c, SameHostDaemon)
 	prefix, slash := getPrefixAndSlashFromDaemonPlatform()
-	hostpath := randomTmpDirPath("test", daemonPlatform)
+	hostpath := testutil.RandomTmpDirPath("test", daemonPlatform)
 	if err := os.MkdirAll(hostpath, 0755); err != nil {
 		c.Fatalf("Failed to create %s: %q", hostpath, err)
 	}
 	defer os.RemoveAll(hostpath)
 
-	// TODO Windows: Temporary check - remove once TP5 support is dropped
-	if daemonPlatform == "windows" && windowsDaemonKV < 14350 {
-		c.Skip("Needs later Windows build for RO volumes")
-	}
 	dockerCmd(c, "run", "--name", "parent", "-v", hostpath+":"+prefix+slash+"test:ro", "busybox", "true")
 
 	// Expect this "rw" mode to be be ignored since the inherited volume is "ro"
@@ -531,8 +521,8 @@ func (s *DockerSuite) TestVolumesFromGetsProperMode(c *check.C) {
 
 // Test for GH#10618
 func (s *DockerSuite) TestRunNoDupVolumes(c *check.C) {
-	path1 := randomTmpDirPath("test1", daemonPlatform)
-	path2 := randomTmpDirPath("test2", daemonPlatform)
+	path1 := testutil.RandomTmpDirPath("test1", daemonPlatform)
+	path2 := testutil.RandomTmpDirPath("test2", daemonPlatform)
 
 	someplace := ":/someplace"
 	if daemonPlatform == "windows" {
@@ -634,13 +624,14 @@ func (s *DockerSuite) TestRunCreateVolume(c *check.C) {
 func (s *DockerSuite) TestRunCreateVolumeWithSymlink(c *check.C) {
 	// Cannot run on Windows as relies on Linux-specific functionality (sh -c mount...)
 	testRequires(c, DaemonIsLinux)
+	workingDirectory, err := ioutil.TempDir("", "TestRunCreateVolumeWithSymlink")
 	image := "docker-test-createvolumewithsymlink"
 
 	buildCmd := exec.Command(dockerBinary, "build", "-t", image, "-")
 	buildCmd.Stdin = strings.NewReader(`FROM busybox
 		RUN ln -s home /bar`)
 	buildCmd.Dir = workingDirectory
-	err := buildCmd.Run()
+	err = buildCmd.Run()
 	if err != nil {
 		c.Fatalf("could not build '%s': %v", image, err)
 	}
@@ -666,9 +657,12 @@ func (s *DockerSuite) TestRunCreateVolumeWithSymlink(c *check.C) {
 
 // Tests that a volume path that has a symlink exists in a container mounting it with `--volumes-from`.
 func (s *DockerSuite) TestRunVolumesFromSymlinkPath(c *check.C) {
-	// TODO Windows (Post TP5): This test cannot run on a Windows daemon as
+	// This test cannot run on a Windows daemon as
 	// Windows does not support symlinks inside a volume path
 	testRequires(c, DaemonIsLinux)
+
+	workingDirectory, err := ioutil.TempDir("", "TestRunVolumesFromSymlinkPath")
+	c.Assert(err, checker.IsNil)
 	name := "docker-test-volumesfromsymlinkpath"
 	prefix := ""
 	dfContents := `FROM busybox
@@ -687,7 +681,7 @@ func (s *DockerSuite) TestRunVolumesFromSymlinkPath(c *check.C) {
 	buildCmd := exec.Command(dockerBinary, "build", "-t", name, "-")
 	buildCmd.Stdin = strings.NewReader(dfContents)
 	buildCmd.Dir = workingDirectory
-	err := buildCmd.Run()
+	err = buildCmd.Run()
 	if err != nil {
 		c.Fatalf("could not build 'docker-test-volumesfromsymlinkpath': %v", err)
 	}
@@ -825,21 +819,21 @@ func (s *DockerSuite) TestRunEnvironment(c *check.C) {
 	// TODO Windows: Environment handling is different between Linux and
 	// Windows and this test relies currently on unix functionality.
 	testRequires(c, DaemonIsLinux)
-	cmd := exec.Command(dockerBinary, "run", "-h", "testing", "-e=FALSE=true", "-e=TRUE", "-e=TRICKY", "-e=HOME=", "busybox", "env")
-	cmd.Env = append(os.Environ(),
-		"TRUE=false",
-		"TRICKY=tri\ncky\n",
-	)
+	result := icmd.RunCmd(icmd.Cmd{
+		Command: []string{dockerBinary, "run", "-h", "testing", "-e=FALSE=true", "-e=TRUE", "-e=TRICKY", "-e=HOME=", "busybox", "env"},
+		Env: append(os.Environ(),
+			"TRUE=false",
+			"TRICKY=tri\ncky\n",
+		),
+	})
+	result.Assert(c, icmd.Success)
 
-	out, _, err := runCommandWithOutput(cmd)
-	if err != nil {
-		c.Fatal(err, out)
-	}
-
-	actualEnv := strings.Split(strings.TrimSpace(out), "\n")
+	actualEnv := strings.Split(strings.TrimSpace(result.Combined()), "\n")
 	sort.Strings(actualEnv)
 
 	goodEnv := []string{
+		// The first two should not be tested here, those are "inherent" environment variable. This test validates
+		// the -e behavior, not the default environment variable (that could be subject to change)
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOSTNAME=testing",
 		"FALSE=true",
@@ -869,15 +863,13 @@ func (s *DockerSuite) TestRunEnvironmentErase(c *check.C) {
 	// not set in our local env that they're removed (if present) in
 	// the container
 
-	cmd := exec.Command(dockerBinary, "run", "-e", "FOO", "-e", "HOSTNAME", "busybox", "env")
-	cmd.Env = appendBaseEnv(true)
+	result := icmd.RunCmd(icmd.Cmd{
+		Command: []string{dockerBinary, "run", "-e", "FOO", "-e", "HOSTNAME", "busybox", "env"},
+		Env:     appendBaseEnv(true),
+	})
+	result.Assert(c, icmd.Success)
 
-	out, _, err := runCommandWithOutput(cmd)
-	if err != nil {
-		c.Fatal(err, out)
-	}
-
-	actualEnv := strings.Split(strings.TrimSpace(out), "\n")
+	actualEnv := strings.Split(strings.TrimSpace(result.Combined()), "\n")
 	sort.Strings(actualEnv)
 
 	goodEnv := []string{
@@ -903,15 +895,13 @@ func (s *DockerSuite) TestRunEnvironmentOverride(c *check.C) {
 	// Test to make sure that when we use -e on env vars that are
 	// already in the env that we're overriding them
 
-	cmd := exec.Command(dockerBinary, "run", "-e", "HOSTNAME", "-e", "HOME=/root2", "busybox", "env")
-	cmd.Env = appendBaseEnv(true, "HOSTNAME=bar")
+	result := icmd.RunCmd(icmd.Cmd{
+		Command: []string{dockerBinary, "run", "-e", "HOSTNAME", "-e", "HOME=/root2", "busybox", "env"},
+		Env:     appendBaseEnv(true, "HOSTNAME=bar"),
+	})
+	result.Assert(c, icmd.Success)
 
-	out, _, err := runCommandWithOutput(cmd)
-	if err != nil {
-		c.Fatal(err, out)
-	}
-
-	actualEnv := strings.Split(strings.TrimSpace(out), "\n")
+	actualEnv := strings.Split(strings.TrimSpace(result.Combined()), "\n")
 	sort.Strings(actualEnv)
 
 	goodEnv := []string{
@@ -1460,10 +1450,7 @@ func (s *DockerSuite) TestRunResolvconfUpdate(c *check.C) {
 		c.Fatal(err)
 	}
 	if mounted {
-		cmd := exec.Command("umount", "/etc/resolv.conf")
-		if _, err = runCommand(cmd); err != nil {
-			c.Fatal(err)
-		}
+		icmd.RunCommand("umount", "/etc/resolv.conf").Assert(c, icmd.Success)
 	}
 
 	//cleanup
@@ -1663,13 +1650,11 @@ func (s *DockerSuite) TestRunAttachStdOutAndErrTTYMode(c *check.C) {
 // Test for #10388 - this will run the same test as TestRunAttachStdOutAndErrTTYMode
 // but using --attach instead of -a to make sure we read the flag correctly
 func (s *DockerSuite) TestRunAttachWithDetach(c *check.C) {
-	cmd := exec.Command(dockerBinary, "run", "-d", "--attach", "stdout", "busybox", "true")
-	_, stderr, _, err := runCommandWithStdoutStderr(cmd)
-	if err == nil {
-		c.Fatal("Container should have exited with error code different than 0")
-	} else if !strings.Contains(stderr, "Conflicting options: -a and -d") {
-		c.Fatal("Should have been returned an error with conflicting options -a and -d")
-	}
+	icmd.RunCommand(dockerBinary, "run", "-d", "--attach", "stdout", "busybox", "true").Assert(c, icmd.Expected{
+		ExitCode: 1,
+		Error:    "exit status 1",
+		Err:      "Conflicting options: -a and -d",
+	})
 }
 
 func (s *DockerSuite) TestRunState(c *check.C) {
@@ -1733,7 +1718,7 @@ func (s *DockerSuite) TestRunCopyVolumeUIDGID(c *check.C) {
 
 // Test for #1582
 func (s *DockerSuite) TestRunCopyVolumeContent(c *check.C) {
-	// TODO Windows, post TP5. Windows does not yet support volume functionality
+	// TODO Windows, post RS1. Windows does not yet support volume functionality
 	// that copies from the image to the volume.
 	testRequires(c, DaemonIsLinux)
 	name := "testruncopyvolumecontent"
@@ -1986,13 +1971,10 @@ func (s *DockerSuite) TestRunBindMounts(c *check.C) {
 	defer os.RemoveAll(tmpDir)
 	writeFile(path.Join(tmpDir, "touch-me"), "", c)
 
-	// TODO Windows: Temporary check - remove once TP5 support is dropped
-	if daemonPlatform != "windows" || windowsDaemonKV >= 14350 {
-		// Test reading from a read-only bind mount
-		out, _ := dockerCmd(c, "run", "-v", fmt.Sprintf("%s:%s/tmp:ro", tmpDir, prefix), "busybox", "ls", prefix+"/tmp")
-		if !strings.Contains(out, "touch-me") {
-			c.Fatal("Container failed to read from bind mount")
-		}
+	// Test reading from a read-only bind mount
+	out, _ := dockerCmd(c, "run", "-v", fmt.Sprintf("%s:%s/tmp:ro", tmpDir, prefix), "busybox", "ls", prefix+"/tmp")
+	if !strings.Contains(out, "touch-me") {
+		c.Fatal("Container failed to read from bind mount")
 	}
 
 	// test writing to bind mount
@@ -2125,13 +2107,10 @@ func (s *DockerSuite) TestRunDeallocatePortOnMissingIptablesRule(c *check.C) {
 
 	id := strings.TrimSpace(out)
 	ip := inspectField(c, id, "NetworkSettings.Networks.bridge.IPAddress")
-	iptCmd := exec.Command("iptables", "-D", "DOCKER", "-d", fmt.Sprintf("%s/32", ip),
-		"!", "-i", "docker0", "-o", "docker0", "-p", "tcp", "-m", "tcp", "--dport", "23", "-j", "ACCEPT")
-	out, _, err := runCommandWithOutput(iptCmd)
-	if err != nil {
-		c.Fatal(err, out)
-	}
-	if err := deleteContainer(id); err != nil {
+	icmd.RunCommand("iptables", "-D", "DOCKER", "-d", fmt.Sprintf("%s/32", ip),
+		"!", "-i", "docker0", "-o", "docker0", "-p", "tcp", "-m", "tcp", "--dport", "23", "-j", "ACCEPT").Assert(c, icmd.Success)
+
+	if err := deleteContainer(false, id); err != nil {
 		c.Fatal(err)
 	}
 
@@ -2179,7 +2158,7 @@ func (s *DockerSuite) TestRunAllocatePortInReservedRange(c *check.C) {
 
 // Regression test for #7792
 func (s *DockerSuite) TestRunMountOrdering(c *check.C) {
-	// TODO Windows: Post TP5. Updated, but Windows does not support nested mounts currently.
+	// TODO Windows: Post RS1. Windows does not support nested mounts.
 	testRequires(c, SameHostDaemon, DaemonIsLinux, NotUserNamespace)
 	prefix, _ := getPrefixAndSlashFromDaemonPlatform()
 
@@ -2289,7 +2268,7 @@ func (s *DockerSuite) TestVolumesNoCopyData(c *check.C) {
 		c.Fatalf("Data was copied on volumes-from but shouldn't be:\n%q", out)
 	}
 
-	tmpDir := randomTmpDirPath("docker_test_bind_mount_copy_data", daemonPlatform)
+	tmpDir := testutil.RandomTmpDirPath("docker_test_bind_mount_copy_data", daemonPlatform)
 	if out, _, err := dockerCmdWithError("run", "-v", tmpDir+":/foo", "dataimage", "ls", "-lh", "/foo/bar"); err == nil || !strings.Contains(out, "No such file or directory") {
 		c.Fatalf("Data was copied on bind-mount but shouldn't be:\n%q", out)
 	}
@@ -2358,7 +2337,7 @@ func (s *DockerSuite) TestRunSlowStdoutConsumer(c *check.C) {
 	if err := cont.Start(); err != nil {
 		c.Fatal(err)
 	}
-	n, err := consumeWithSpeed(stdout, 10000, 5*time.Millisecond, nil)
+	n, err := testutil.ConsumeWithSpeed(stdout, 10000, 5*time.Millisecond, nil)
 	if err != nil {
 		c.Fatal(err)
 	}
@@ -3123,11 +3102,15 @@ func (s *DockerSuite) TestRunUnshareProc(c *check.C) {
 		}
 	}()
 
+	var retErr error
 	for i := 0; i < 3; i++ {
 		err := <-errChan
-		if err != nil {
-			c.Fatal(err)
+		if retErr == nil && err != nil {
+			retErr = err
 		}
+	}
+	if retErr != nil {
+		c.Fatal(retErr)
 	}
 }
 
@@ -3172,10 +3155,7 @@ func (s *DockerSuite) TestVolumeFromMixedRWOptions(c *check.C) {
 
 	dockerCmd(c, "run", "--name", "parent", "-v", prefix+"/test", "busybox", "true")
 
-	// TODO Windows: Temporary check - remove once TP5 support is dropped
-	if daemonPlatform != "windows" || windowsDaemonKV >= 14350 {
-		dockerCmd(c, "run", "--volumes-from", "parent:ro", "--name", "test-volumes-1", "busybox", "true")
-	}
+	dockerCmd(c, "run", "--volumes-from", "parent:ro", "--name", "test-volumes-1", "busybox", "true")
 	dockerCmd(c, "run", "--volumes-from", "parent:rw", "--name", "test-volumes-2", "busybox", "true")
 
 	if daemonPlatform != "windows" {
@@ -3286,30 +3266,11 @@ func (s *DockerTrustSuite) TestTrustedRun(c *check.C) {
 	repoName := s.setupTrustedImage(c, "trusted-run")
 
 	// Try run
-	runCmd := exec.Command(dockerBinary, "run", repoName)
-	s.trustedCmd(runCmd)
-	out, _, err := runCommandWithOutput(runCmd)
-	if err != nil {
-		c.Fatalf("Error running trusted run: %s\n%s\n", err, out)
-	}
-
-	if !strings.Contains(string(out), "Tagging") {
-		c.Fatalf("Missing expected output on trusted push:\n%s", out)
-	}
-
+	icmd.RunCmd(icmd.Command(dockerBinary, "run", repoName), trustedCmd).Assert(c, SuccessTagging)
 	dockerCmd(c, "rmi", repoName)
 
 	// Try untrusted run to ensure we pushed the tag to the registry
-	runCmd = exec.Command(dockerBinary, "run", "--disable-content-trust=true", repoName)
-	s.trustedCmd(runCmd)
-	out, _, err = runCommandWithOutput(runCmd)
-	if err != nil {
-		c.Fatalf("Error running trusted run: %s\n%s", err, out)
-	}
-
-	if !strings.Contains(string(out), "Status: Downloaded") {
-		c.Fatalf("Missing expected output on trusted run with --disable-content-trust:\n%s", out)
-	}
+	icmd.RunCmd(icmd.Command(dockerBinary, "run", "--disable-content-trust=true", repoName), trustedCmd).Assert(c, SuccessDownloadedOnStderr)
 }
 
 func (s *DockerTrustSuite) TestUntrustedRun(c *check.C) {
@@ -3322,16 +3283,10 @@ func (s *DockerTrustSuite) TestUntrustedRun(c *check.C) {
 	dockerCmd(c, "rmi", repoName)
 
 	// Try trusted run on untrusted tag
-	runCmd := exec.Command(dockerBinary, "run", repoName)
-	s.trustedCmd(runCmd)
-	out, _, err := runCommandWithOutput(runCmd)
-	if err == nil {
-		c.Fatalf("Error expected when running trusted run with:\n%s", out)
-	}
-
-	if !strings.Contains(string(out), "does not have trust data for") {
-		c.Fatalf("Missing expected output on trusted run:\n%s", out)
-	}
+	icmd.RunCmd(icmd.Command(dockerBinary, "run", repoName), trustedCmd).Assert(c, icmd.Expected{
+		ExitCode: 125,
+		Err:      "does not have trust data for",
+	})
 }
 
 func (s *DockerTrustSuite) TestRunWhenCertExpired(c *check.C) {
@@ -3343,32 +3298,21 @@ func (s *DockerTrustSuite) TestRunWhenCertExpired(c *check.C) {
 	// Certificates have 10 years of expiration
 	elevenYearsFromNow := time.Now().Add(time.Hour * 24 * 365 * 11)
 
-	runAtDifferentDate(elevenYearsFromNow, func() {
+	testutil.RunAtDifferentDate(elevenYearsFromNow, func() {
 		// Try run
-		runCmd := exec.Command(dockerBinary, "run", repoName)
-		s.trustedCmd(runCmd)
-		out, _, err := runCommandWithOutput(runCmd)
-		if err == nil {
-			c.Fatalf("Error running trusted run in the distant future: %s\n%s", err, out)
-		}
-
-		if !strings.Contains(string(out), "could not validate the path to a trusted root") {
-			c.Fatalf("Missing expected output on trusted run in the distant future:\n%s", out)
-		}
+		icmd.RunCmd(icmd.Cmd{
+			Command: []string{dockerBinary, "run", repoName},
+		}, trustedCmd).Assert(c, icmd.Expected{
+			ExitCode: 1,
+			Err:      "could not validate the path to a trusted root",
+		})
 	})
 
-	runAtDifferentDate(elevenYearsFromNow, func() {
+	testutil.RunAtDifferentDate(elevenYearsFromNow, func() {
 		// Try run
-		runCmd := exec.Command(dockerBinary, "run", "--disable-content-trust", repoName)
-		s.trustedCmd(runCmd)
-		out, _, err := runCommandWithOutput(runCmd)
-		if err != nil {
-			c.Fatalf("Error running untrusted run in the distant future: %s\n%s", err, out)
-		}
-
-		if !strings.Contains(string(out), "Status: Downloaded") {
-			c.Fatalf("Missing expected output on untrusted run in the distant future:\n%s", out)
-		}
+		icmd.RunCmd(icmd.Cmd{
+			Command: []string{dockerBinary, "run", "--disable-content-trust", repoName},
+		}, trustedCmd).Assert(c, SuccessDownloaded)
 	})
 }
 
@@ -3384,30 +3328,11 @@ func (s *DockerTrustSuite) TestTrustedRunFromBadTrustServer(c *check.C) {
 	// tag the image and upload it to the private registry
 	dockerCmd(c, "tag", "busybox", repoName)
 
-	pushCmd := exec.Command(dockerBinary, "push", repoName)
-	s.trustedCmd(pushCmd)
-	out, _, err := runCommandWithOutput(pushCmd)
-	if err != nil {
-		c.Fatalf("Error running trusted push: %s\n%s", err, out)
-	}
-	if !strings.Contains(string(out), "Signing and pushing trust metadata") {
-		c.Fatalf("Missing expected output on trusted push:\n%s", out)
-	}
-
+	icmd.RunCmd(icmd.Command(dockerBinary, "push", repoName), trustedCmd).Assert(c, SuccessSigningAndPushing)
 	dockerCmd(c, "rmi", repoName)
 
 	// Try run
-	runCmd := exec.Command(dockerBinary, "run", repoName)
-	s.trustedCmd(runCmd)
-	out, _, err = runCommandWithOutput(runCmd)
-	if err != nil {
-		c.Fatalf("Error running trusted run: %s\n%s", err, out)
-	}
-
-	if !strings.Contains(string(out), "Tagging") {
-		c.Fatalf("Missing expected output on trusted push:\n%s", out)
-	}
-
+	icmd.RunCmd(icmd.Command(dockerBinary, "run", repoName), trustedCmd).Assert(c, SuccessTagging)
 	dockerCmd(c, "rmi", repoName)
 
 	// Kill the notary server, start a new "evil" one.
@@ -3422,27 +3347,13 @@ func (s *DockerTrustSuite) TestTrustedRunFromBadTrustServer(c *check.C) {
 	dockerCmd(c, "--config", evilLocalConfigDir, "tag", "busybox", repoName)
 
 	// Push up to the new server
-	pushCmd = exec.Command(dockerBinary, "--config", evilLocalConfigDir, "push", repoName)
-	s.trustedCmd(pushCmd)
-	out, _, err = runCommandWithOutput(pushCmd)
-	if err != nil {
-		c.Fatalf("Error running trusted push: %s\n%s", err, out)
-	}
-	if !strings.Contains(string(out), "Signing and pushing trust metadata") {
-		c.Fatalf("Missing expected output on trusted push:\n%s", out)
-	}
+	icmd.RunCmd(icmd.Command(dockerBinary, "--config", evilLocalConfigDir, "push", repoName), trustedCmd).Assert(c, SuccessSigningAndPushing)
 
 	// Now, try running with the original client from this new trust server. This should fail because the new root is invalid.
-	runCmd = exec.Command(dockerBinary, "run", repoName)
-	s.trustedCmd(runCmd)
-	out, _, err = runCommandWithOutput(runCmd)
-
-	if err == nil {
-		c.Fatalf("Continuing with cached data even though it's an invalid root rotation: %s\n%s", err, out)
-	}
-	if !strings.Contains(out, "could not rotate trust to a new trusted root") {
-		c.Fatalf("Missing expected output on trusted run:\n%s", out)
-	}
+	icmd.RunCmd(icmd.Command(dockerBinary, "run", repoName), trustedCmd).Assert(c, icmd.Expected{
+		ExitCode: 125,
+		Err:      "could not rotate trust to a new trusted root",
+	})
 }
 
 func (s *DockerSuite) TestPtraceContainerProcsFromHost(c *check.C) {
@@ -3549,7 +3460,7 @@ func (s *DockerSuite) TestRunContainerWithCgroupParent(c *check.C) {
 	if err != nil {
 		c.Fatalf("unexpected failure when running container with --cgroup-parent option - %s\n%v", string(out), err)
 	}
-	cgroupPaths := parseCgroupPaths(string(out))
+	cgroupPaths := testutil.ParseCgroupPaths(string(out))
 	if len(cgroupPaths) == 0 {
 		c.Fatalf("unexpected output - %q", string(out))
 	}
@@ -3578,7 +3489,7 @@ func (s *DockerSuite) TestRunContainerWithCgroupParentAbsPath(c *check.C) {
 	if err != nil {
 		c.Fatalf("unexpected failure when running container with --cgroup-parent option - %s\n%v", string(out), err)
 	}
-	cgroupPaths := parseCgroupPaths(string(out))
+	cgroupPaths := testutil.ParseCgroupPaths(string(out))
 	if len(cgroupPaths) == 0 {
 		c.Fatalf("unexpected output - %q", string(out))
 	}
@@ -3617,7 +3528,7 @@ func (s *DockerSuite) TestRunInvalidCgroupParent(c *check.C) {
 		c.Fatalf("SECURITY: --cgroup-parent with ../../ relative paths cause files to be created in the host (this is bad) !!")
 	}
 
-	cgroupPaths := parseCgroupPaths(string(out))
+	cgroupPaths := testutil.ParseCgroupPaths(string(out))
 	if len(cgroupPaths) == 0 {
 		c.Fatalf("unexpected output - %q", string(out))
 	}
@@ -3656,7 +3567,7 @@ func (s *DockerSuite) TestRunAbsoluteInvalidCgroupParent(c *check.C) {
 		c.Fatalf("SECURITY: --cgroup-parent with /../../ garbage paths cause files to be created in the host (this is bad) !!")
 	}
 
-	cgroupPaths := parseCgroupPaths(string(out))
+	cgroupPaths := testutil.ParseCgroupPaths(string(out))
 	if len(cgroupPaths) == 0 {
 		c.Fatalf("unexpected output - %q", string(out))
 	}
@@ -4029,23 +3940,19 @@ func (s *DockerSuite) TestRunWrongCpusetMemsFlagValue(c *check.C) {
 // TestRunNonExecutableCmd checks that 'docker run busybox foo' exits with error code 127'
 func (s *DockerSuite) TestRunNonExecutableCmd(c *check.C) {
 	name := "testNonExecutableCmd"
-	runCmd := exec.Command(dockerBinary, "run", "--name", name, "busybox", "foo")
-	_, exit, _ := runCommandWithOutput(runCmd)
-	stateExitCode := findContainerExitCode(c, name)
-	if !(exit == 127 && strings.Contains(stateExitCode, "127")) {
-		c.Fatalf("Run non-executable command should have errored with exit code 127, but we got exit: %d, State.ExitCode: %s", exit, stateExitCode)
-	}
+	icmd.RunCommand(dockerBinary, "run", "--name", name, "busybox", "foo").Assert(c, icmd.Expected{
+		ExitCode: 127,
+		Error:    "exit status 127",
+	})
 }
 
 // TestRunNonExistingCmd checks that 'docker run busybox /bin/foo' exits with code 127.
 func (s *DockerSuite) TestRunNonExistingCmd(c *check.C) {
 	name := "testNonExistingCmd"
-	runCmd := exec.Command(dockerBinary, "run", "--name", name, "busybox", "/bin/foo")
-	_, exit, _ := runCommandWithOutput(runCmd)
-	stateExitCode := findContainerExitCode(c, name)
-	if !(exit == 127 && strings.Contains(stateExitCode, "127")) {
-		c.Fatalf("Run non-existing command should have errored with exit code 127, but we got exit: %d, State.ExitCode: %s", exit, stateExitCode)
-	}
+	icmd.RunCommand(dockerBinary, "run", "--name", name, "busybox", "/bin/foo").Assert(c, icmd.Expected{
+		ExitCode: 127,
+		Error:    "exit status 127",
+	})
 }
 
 // TestCmdCannotBeInvoked checks that 'docker run busybox /etc' exits with 126, or
@@ -4057,30 +3964,28 @@ func (s *DockerSuite) TestCmdCannotBeInvoked(c *check.C) {
 		expected = 127
 	}
 	name := "testCmdCannotBeInvoked"
-	runCmd := exec.Command(dockerBinary, "run", "--name", name, "busybox", "/etc")
-	_, exit, _ := runCommandWithOutput(runCmd)
-	stateExitCode := findContainerExitCode(c, name)
-	if !(exit == expected && strings.Contains(stateExitCode, strconv.Itoa(expected))) {
-		c.Fatalf("Run cmd that cannot be invoked should have errored with code %d, but we got exit: %d, State.ExitCode: %s", expected, exit, stateExitCode)
-	}
+	icmd.RunCommand(dockerBinary, "run", "--name", name, "busybox", "/etc").Assert(c, icmd.Expected{
+		ExitCode: expected,
+		Error:    fmt.Sprintf("exit status %d", expected),
+	})
 }
 
 // TestRunNonExistingImage checks that 'docker run foo' exits with error msg 125 and contains  'Unable to find image'
+// FIXME(vdemeester) should be a unit test
 func (s *DockerSuite) TestRunNonExistingImage(c *check.C) {
-	runCmd := exec.Command(dockerBinary, "run", "foo")
-	out, exit, err := runCommandWithOutput(runCmd)
-	if !(err != nil && exit == 125 && strings.Contains(out, "Unable to find image")) {
-		c.Fatalf("Run non-existing image should have errored with 'Unable to find image' code 125, but we got out: %s, exit: %d, err: %s", out, exit, err)
-	}
+	icmd.RunCommand(dockerBinary, "run", "foo").Assert(c, icmd.Expected{
+		ExitCode: 125,
+		Err:      "Unable to find image",
+	})
 }
 
 // TestDockerFails checks that 'docker run -foo busybox' exits with 125 to signal docker run failed
+// FIXME(vdemeester) should be a unit test
 func (s *DockerSuite) TestDockerFails(c *check.C) {
-	runCmd := exec.Command(dockerBinary, "run", "-foo", "busybox")
-	out, exit, err := runCommandWithOutput(runCmd)
-	if !(err != nil && exit == 125) {
-		c.Fatalf("Docker run with flag not defined should exit with 125, but we got out: %s, exit: %d, err: %s", out, exit, err)
-	}
+	icmd.RunCommand(dockerBinary, "run", "-foo", "busybox").Assert(c, icmd.Expected{
+		ExitCode: 125,
+		Error:    "exit status 125",
+	})
 }
 
 // TestRunInvalidReference invokes docker run with a bad reference.
@@ -4164,15 +4069,8 @@ func (s *DockerSuite) TestRunVolumesMountedAsShared(c *check.C) {
 
 	// Convert this directory into a shared mount point so that we do
 	// not rely on propagation properties of parent mount.
-	cmd := exec.Command("mount", "--bind", tmpDir, tmpDir)
-	if _, err = runCommand(cmd); err != nil {
-		c.Fatal(err)
-	}
-
-	cmd = exec.Command("mount", "--make-private", "--make-shared", tmpDir)
-	if _, err = runCommand(cmd); err != nil {
-		c.Fatal(err)
-	}
+	icmd.RunCommand("mount", "--bind", tmpDir, tmpDir).Assert(c, icmd.Success)
+	icmd.RunCommand("mount", "--make-private", "--make-shared", tmpDir).Assert(c, icmd.Success)
 
 	dockerCmd(c, "run", "--privileged", "-v", fmt.Sprintf("%s:/volume-dest:shared", tmpDir), "busybox", "mount", "--bind", "/volume-dest/mnt1", "/volume-dest/mnt1")
 
@@ -4214,25 +4112,15 @@ func (s *DockerSuite) TestRunVolumesMountedAsSlave(c *check.C) {
 
 	// Convert this directory into a shared mount point so that we do
 	// not rely on propagation properties of parent mount.
-	cmd := exec.Command("mount", "--bind", tmpDir, tmpDir)
-	if _, err = runCommand(cmd); err != nil {
-		c.Fatal(err)
-	}
-
-	cmd = exec.Command("mount", "--make-private", "--make-shared", tmpDir)
-	if _, err = runCommand(cmd); err != nil {
-		c.Fatal(err)
-	}
+	icmd.RunCommand("mount", "--bind", tmpDir, tmpDir).Assert(c, icmd.Success)
+	icmd.RunCommand("mount", "--make-private", "--make-shared", tmpDir).Assert(c, icmd.Success)
 
 	dockerCmd(c, "run", "-i", "-d", "--name", "parent", "-v", fmt.Sprintf("%s:/volume-dest:slave", tmpDir), "busybox", "top")
 
 	// Bind mount tmpDir2/ onto tmpDir/mnt1. If mount propagates inside
 	// container then contents of tmpDir2/slave-testfile should become
 	// visible at "/volume-dest/mnt1/slave-testfile"
-	cmd = exec.Command("mount", "--bind", tmpDir2, path.Join(tmpDir, "mnt1"))
-	if _, err = runCommand(cmd); err != nil {
-		c.Fatal(err)
-	}
+	icmd.RunCommand("mount", "--bind", tmpDir2, path.Join(tmpDir, "mnt1")).Assert(c, icmd.Success)
 
 	out, _ := dockerCmd(c, "exec", "parent", "cat", "/volume-dest/mnt1/slave-testfile")
 
@@ -4371,42 +4259,6 @@ func (s *DockerSuite) TestRunVolumeCopyFlag(c *check.C) {
 	c.Assert(err, checker.NotNil, check.Commentf(out))
 }
 
-func (s *DockerSuite) TestRunTooLongHostname(c *check.C) {
-	// Test case in #21445
-	hostname1 := "this-is-a-way-too-long-hostname-but-it-should-give-a-nice-error.local"
-	out, _, err := dockerCmdWithError("run", "--hostname", hostname1, "busybox", "echo", "test")
-	c.Assert(err, checker.NotNil, check.Commentf("Expected docker run to fail!"))
-	c.Assert(out, checker.Contains, "invalid hostname format:", check.Commentf("Expected to have 'invalid hostname format:' in the output, get: %s!", out))
-
-	// Additional test cases
-	validHostnames := map[string]string{
-		"hostname":    "hostname",
-		"host-name":   "host-name",
-		"hostname123": "hostname123",
-		"123hostname": "123hostname",
-		"hostname-of-63-bytes-long-should-be-valid-and-without-any-error": "hostname-of-63-bytes-long-should-be-valid-and-without-any-error",
-	}
-	for hostname := range validHostnames {
-		dockerCmd(c, "run", "--hostname", hostname, "busybox", "echo", "test")
-	}
-
-	invalidHostnames := map[string]string{
-		"^hostname": "invalid hostname format: ^hostname",
-		"hostname%": "invalid hostname format: hostname%",
-		"host&name": "invalid hostname format: host&name",
-		"-hostname": "invalid hostname format: -hostname",
-		"host_name": "invalid hostname format: host_name",
-		"hostname-of-64-bytes-long-should-be-invalid-and-be-with-an-error": "invalid hostname format: hostname-of-64-bytes-long-should-be-invalid-and-be-with-an-error",
-	}
-
-	for hostname, expectedError := range invalidHostnames {
-		out, _, err = dockerCmdWithError("run", "--hostname", hostname, "busybox", "echo", "test")
-		c.Assert(err, checker.NotNil, check.Commentf("Expected docker run to fail!"))
-		c.Assert(out, checker.Contains, expectedError, check.Commentf("Expected to have '%s' in the output, get: %s!", expectedError, out))
-
-	}
-}
-
 // Test case for #21976
 func (s *DockerSuite) TestRunDNSInHostMode(c *check.C) {
 	testRequires(c, DaemonIsLinux, NotUserNamespace)
@@ -4487,12 +4339,12 @@ exec "$@"`,
 }
 
 func (s *DockerDaemonSuite) TestRunWithUlimitAndDaemonDefault(c *check.C) {
-	c.Assert(s.d.StartWithBusybox("--debug", "--default-ulimit=nofile=65535"), checker.IsNil)
+	s.d.StartWithBusybox(c, "--debug", "--default-ulimit=nofile=65535")
 
 	name := "test-A"
 	_, err := s.d.Cmd("run", "--name", name, "-d", "busybox", "top")
 	c.Assert(err, checker.IsNil)
-	c.Assert(s.d.waitRun(name), check.IsNil)
+	c.Assert(s.d.WaitRun(name), check.IsNil)
 
 	out, err := s.d.Cmd("inspect", "--format", "{{.HostConfig.Ulimits}}", name)
 	c.Assert(err, checker.IsNil)
@@ -4501,7 +4353,7 @@ func (s *DockerDaemonSuite) TestRunWithUlimitAndDaemonDefault(c *check.C) {
 	name = "test-B"
 	_, err = s.d.Cmd("run", "--name", name, "--ulimit=nofile=42", "-d", "busybox", "top")
 	c.Assert(err, checker.IsNil)
-	c.Assert(s.d.waitRun(name), check.IsNil)
+	c.Assert(s.d.WaitRun(name), check.IsNil)
 
 	out, err = s.d.Cmd("inspect", "--format", "{{.HostConfig.Ulimits}}", name)
 	c.Assert(err, checker.IsNil)
@@ -4514,7 +4366,7 @@ func (s *DockerSuite) TestRunStoppedLoggingDriverNoLeak(c *check.C) {
 
 	out, _, err := dockerCmdWithError("run", "--name=fail", "--log-driver=splunk", "busybox", "true")
 	c.Assert(err, checker.NotNil)
-	c.Assert(out, checker.Contains, "Failed to initialize logging driver", check.Commentf("error should be about logging driver, got output %s", out))
+	c.Assert(out, checker.Contains, "failed to initialize logging driver", check.Commentf("error should be about logging driver, got output %s", out))
 
 	// NGoroutines is not updated right away, so we need to wait before failing
 	c.Assert(waitForGoroutines(nroutines), checker.IsNil)
@@ -4560,16 +4412,16 @@ func (s *DockerSuite) TestRunServicingContainer(c *check.C) {
 	err := waitExited(containerID, 60*time.Second)
 	c.Assert(err, checker.IsNil)
 
-	cmd := exec.Command("powershell", "echo", `(Get-WinEvent -ProviderName "Microsoft-Windows-Hyper-V-Compute" -FilterXPath 'Event[System[EventID=2010]]' -MaxEvents 1).Message`)
-	out2, _, err := runCommandWithOutput(cmd)
-	c.Assert(err, checker.IsNil)
+	result := icmd.RunCommand("powershell", "echo", `(Get-WinEvent -ProviderName "Microsoft-Windows-Hyper-V-Compute" -FilterXPath 'Event[System[EventID=2010]]' -MaxEvents 1).Message`)
+	result.Assert(c, icmd.Success)
+	out2 := result.Combined()
 	c.Assert(out2, checker.Contains, `"Servicing":true`, check.Commentf("Servicing container does not appear to have been started: %s", out2))
 	c.Assert(out2, checker.Contains, `Windows Container (Servicing)`, check.Commentf("Didn't find 'Windows Container (Servicing): %s", out2))
 	c.Assert(out2, checker.Contains, containerID+"_servicing", check.Commentf("Didn't find '%s_servicing': %s", containerID+"_servicing", out2))
 }
 
 func (s *DockerSuite) TestRunDuplicateMount(c *check.C) {
-	testRequires(c, SameHostDaemon, DaemonIsLinux)
+	testRequires(c, SameHostDaemon, DaemonIsLinux, NotUserNamespace)
 
 	tmpFile, err := ioutil.TempFile("", "touch-me")
 	c.Assert(err, checker.IsNil)
@@ -4587,184 +4439,6 @@ func (s *DockerSuite) TestRunDuplicateMount(c *check.C) {
 
 	out = inspectFieldJSON(c, name, "Config.Volumes")
 	c.Assert(out, checker.Contains, "null")
-}
-
-func (s *DockerSuite) TestRunMount(c *check.C) {
-	testRequires(c, DaemonIsLinux, SameHostDaemon, NotUserNamespace)
-
-	// mnt1, mnt2, and testCatFooBar are commonly used in multiple test cases
-	tmpDir, err := ioutil.TempDir("", "mount")
-	if err != nil {
-		c.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-	mnt1, mnt2 := path.Join(tmpDir, "mnt1"), path.Join(tmpDir, "mnt2")
-	if err := os.Mkdir(mnt1, 0755); err != nil {
-		c.Fatal(err)
-	}
-	if err := os.Mkdir(mnt2, 0755); err != nil {
-		c.Fatal(err)
-	}
-	if err := ioutil.WriteFile(path.Join(mnt1, "test1"), []byte("test1"), 0644); err != nil {
-		c.Fatal(err)
-	}
-	if err := ioutil.WriteFile(path.Join(mnt2, "test2"), []byte("test2"), 0644); err != nil {
-		c.Fatal(err)
-	}
-	testCatFooBar := func(cName string) error {
-		out, _ := dockerCmd(c, "exec", cName, "cat", "/foo/test1")
-		if out != "test1" {
-			return fmt.Errorf("%s not mounted on /foo", mnt1)
-		}
-		out, _ = dockerCmd(c, "exec", cName, "cat", "/bar/test2")
-		if out != "test2" {
-			return fmt.Errorf("%s not mounted on /bar", mnt2)
-		}
-		return nil
-	}
-
-	type testCase struct {
-		equivalents [][]string
-		valid       bool
-		// fn should be nil if valid==false
-		fn func(cName string) error
-	}
-	cases := []testCase{
-		{
-			equivalents: [][]string{
-				{
-					"--mount", fmt.Sprintf("type=bind,src=%s,dst=/foo", mnt1),
-					"--mount", fmt.Sprintf("type=bind,src=%s,dst=/bar", mnt2),
-				},
-				{
-					"--mount", fmt.Sprintf("type=bind,src=%s,dst=/foo", mnt1),
-					"--mount", fmt.Sprintf("type=bind,src=%s,target=/bar", mnt2),
-				},
-				{
-					"--volume", fmt.Sprintf("%s:/foo", mnt1),
-					"--mount", fmt.Sprintf("type=bind,src=%s,target=/bar", mnt2),
-				},
-			},
-			valid: true,
-			fn:    testCatFooBar,
-		},
-		{
-			equivalents: [][]string{
-				{
-					"--mount", fmt.Sprintf("type=volume,src=%s,dst=/foo", mnt1),
-					"--mount", fmt.Sprintf("type=volume,src=%s,dst=/bar", mnt2),
-				},
-				{
-					"--mount", fmt.Sprintf("type=volume,src=%s,dst=/foo", mnt1),
-					"--mount", fmt.Sprintf("type=volume,src=%s,target=/bar", mnt2),
-				},
-			},
-			valid: false,
-		},
-		{
-			equivalents: [][]string{
-				{
-					"--mount", fmt.Sprintf("type=bind,src=%s,dst=/foo", mnt1),
-					"--mount", fmt.Sprintf("type=volume,src=%s,dst=/bar", mnt2),
-				},
-				{
-					"--volume", fmt.Sprintf("%s:/foo", mnt1),
-					"--mount", fmt.Sprintf("type=volume,src=%s,target=/bar", mnt2),
-				},
-			},
-			valid: false,
-			fn:    testCatFooBar,
-		},
-		{
-			equivalents: [][]string{
-				{
-					"--read-only",
-					"--mount", "type=volume,dst=/bar",
-				},
-			},
-			valid: true,
-			fn: func(cName string) error {
-				_, _, err := dockerCmdWithError("exec", cName, "touch", "/bar/icanwritehere")
-				return err
-			},
-		},
-		{
-			equivalents: [][]string{
-				{
-					"--read-only",
-					"--mount", fmt.Sprintf("type=bind,src=%s,dst=/foo", mnt1),
-					"--mount", "type=volume,dst=/bar",
-				},
-				{
-					"--read-only",
-					"--volume", fmt.Sprintf("%s:/foo", mnt1),
-					"--mount", "type=volume,dst=/bar",
-				},
-			},
-			valid: true,
-			fn: func(cName string) error {
-				out, _ := dockerCmd(c, "exec", cName, "cat", "/foo/test1")
-				if out != "test1" {
-					return fmt.Errorf("%s not mounted on /foo", mnt1)
-				}
-				_, _, err := dockerCmdWithError("exec", cName, "touch", "/bar/icanwritehere")
-				return err
-			},
-		},
-		{
-			equivalents: [][]string{
-				{
-					"--mount", fmt.Sprintf("type=bind,src=%s,dst=/foo", mnt1),
-					"--mount", fmt.Sprintf("type=bind,src=%s,dst=/foo", mnt2),
-				},
-				{
-					"--mount", fmt.Sprintf("type=bind,src=%s,dst=/foo", mnt1),
-					"--mount", fmt.Sprintf("type=bind,src=%s,target=/foo", mnt2),
-				},
-				{
-					"--volume", fmt.Sprintf("%s:/foo", mnt1),
-					"--mount", fmt.Sprintf("type=bind,src=%s,target=/foo", mnt2),
-				},
-			},
-			valid: false,
-		},
-		{
-			equivalents: [][]string{
-				{
-					"--volume", fmt.Sprintf("%s:/foo", mnt1),
-					"--mount", fmt.Sprintf("type=volume,src=%s,target=/foo", mnt2),
-				},
-			},
-			valid: false,
-		},
-		{
-			equivalents: [][]string{
-				{
-					"--mount", "type=volume,target=/foo",
-					"--mount", "type=volume,target=/foo",
-				},
-			},
-			valid: false,
-		},
-	}
-
-	for i, testCase := range cases {
-		for j, opts := range testCase.equivalents {
-			cName := fmt.Sprintf("mount-%d-%d", i, j)
-			_, _, err := dockerCmdWithError(append([]string{"run", "-i", "-d", "--name", cName},
-				append(opts, []string{"busybox", "top"}...)...)...)
-			if testCase.valid {
-				c.Assert(err, check.IsNil,
-					check.Commentf("got error while creating a container with %v (%s)", opts, cName))
-				c.Assert(testCase.fn(cName), check.IsNil,
-					check.Commentf("got error while executing test for %v (%s)", opts, cName))
-				dockerCmd(c, "rm", "-f", cName)
-			} else {
-				c.Assert(err, checker.NotNil,
-					check.Commentf("got nil while creating a container with %v (%s)", opts, cName))
-			}
-		}
-	}
 }
 
 func (s *DockerSuite) TestRunWindowsWithCPUCount(c *check.C) {
@@ -4848,4 +4522,57 @@ func (s *DockerSuite) TestRunEmptyEnv(c *check.C) {
 	out, _, err = dockerCmdWithError("run", "-e", "=foo", "busybox", "true")
 	c.Assert(err, checker.NotNil)
 	c.Assert(out, checker.Contains, expectedOutput)
+}
+
+// #28658
+func (s *DockerSuite) TestSlowStdinClosing(c *check.C) {
+	name := "testslowstdinclosing"
+	repeat := 3 // regression happened 50% of the time
+	for i := 0; i < repeat; i++ {
+		cmd := icmd.Cmd{
+			Command: []string{dockerBinary, "run", "--rm", "--name", name, "-i", "busybox", "cat"},
+			Stdin:   &delayedReader{},
+		}
+		done := make(chan error, 1)
+		go func() {
+			err := icmd.RunCmd(cmd).Error
+			done <- err
+		}()
+
+		select {
+		case <-time.After(15 * time.Second):
+			c.Fatal("running container timed out") // cleanup in teardown
+		case err := <-done:
+			c.Assert(err, checker.IsNil)
+		}
+	}
+}
+
+type delayedReader struct{}
+
+func (s *delayedReader) Read([]byte) (int, error) {
+	time.Sleep(500 * time.Millisecond)
+	return 0, io.EOF
+}
+
+// #28823 (originally #28639)
+func (s *DockerSuite) TestRunMountReadOnlyDevShm(c *check.C) {
+	testRequires(c, SameHostDaemon, DaemonIsLinux, NotUserNamespace)
+	emptyDir, err := ioutil.TempDir("", "test-read-only-dev-shm")
+	c.Assert(err, check.IsNil)
+	defer os.RemoveAll(emptyDir)
+	out, _, err := dockerCmdWithError("run", "--rm", "--read-only",
+		"-v", fmt.Sprintf("%s:/dev/shm:ro", emptyDir),
+		"busybox", "touch", "/dev/shm/foo")
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Read-only file system")
+}
+
+// Test case for 29129
+func (s *DockerSuite) TestRunHostnameInHostMode(c *check.C) {
+	testRequires(c, DaemonIsLinux, NotUserNamespace)
+
+	expectedOutput := "foobar\nfoobar"
+	out, _ := dockerCmd(c, "run", "--net=host", "--hostname=foobar", "busybox", "sh", "-c", `echo $HOSTNAME && hostname`)
+	c.Assert(strings.TrimSpace(out), checker.Equals, expectedOutput)
 }

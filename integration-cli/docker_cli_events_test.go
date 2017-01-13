@@ -14,8 +14,10 @@ import (
 
 	eventtypes "github.com/docker/docker/api/types/events"
 	eventstestutils "github.com/docker/docker/daemon/events/testutils"
-	"github.com/docker/docker/pkg/integration/checker"
-	icmd "github.com/docker/docker/pkg/integration/cmd"
+	"github.com/docker/docker/integration-cli/checker"
+	"github.com/docker/docker/integration-cli/request"
+	"github.com/docker/docker/pkg/testutil"
+	icmd "github.com/docker/docker/pkg/testutil/cmd"
 	"github.com/go-check/check"
 )
 
@@ -221,7 +223,7 @@ func (s *DockerSuite) TestEventsImageImport(c *check.C) {
 	cleanedContainerID := strings.TrimSpace(out)
 
 	since := daemonUnixTime(c)
-	out, _, err := runCommandPipelineWithOutput(
+	out, _, err := testutil.RunCommandPipelineWithOutput(
 		exec.Command(dockerBinary, "export", cleanedContainerID),
 		exec.Command(dockerBinary, "import", "-"),
 	)
@@ -276,14 +278,13 @@ func (s *DockerSuite) TestEventsImageLoad(c *check.C) {
 }
 
 func (s *DockerSuite) TestEventsPluginOps(c *check.C) {
-	testRequires(c, DaemonIsLinux)
+	testRequires(c, DaemonIsLinux, IsAmd64, Network)
 
-	pluginName := "tiborvass/no-remove:latest"
 	since := daemonUnixTime(c)
 
-	dockerCmd(c, "plugin", "install", pluginName, "--grant-all-permissions")
-	dockerCmd(c, "plugin", "disable", pluginName)
-	dockerCmd(c, "plugin", "remove", pluginName)
+	dockerCmd(c, "plugin", "install", pNameWithTag, "--grant-all-permissions")
+	dockerCmd(c, "plugin", "disable", pNameWithTag)
+	dockerCmd(c, "plugin", "remove", pNameWithTag)
 
 	out, _ := dockerCmd(c, "events", "--since", since, "--until", daemonUnixTime(c))
 	events := strings.Split(out, "\n")
@@ -292,7 +293,7 @@ func (s *DockerSuite) TestEventsPluginOps(c *check.C) {
 	nEvents := len(events)
 	c.Assert(nEvents, checker.GreaterOrEqualThan, 4)
 
-	pluginEvents := eventActionsByIDAndType(c, events, pluginName, "plugin")
+	pluginEvents := eventActionsByIDAndType(c, events, pNameWithTag, "plugin")
 	c.Assert(pluginEvents, checker.HasLen, 4, check.Commentf("events: %v", events))
 
 	c.Assert(pluginEvents[0], checker.Equals, "pull", check.Commentf(out))
@@ -494,7 +495,7 @@ func (s *DockerSuite) TestEventsResize(c *check.C) {
 	c.Assert(waitRun(cID), checker.IsNil)
 
 	endpoint := "/containers/" + cID + "/resize?h=80&w=24"
-	status, _, err := sockRequest("POST", endpoint, nil)
+	status, _, err := request.SockRequest("POST", endpoint, nil, daemonHost())
 	c.Assert(status, checker.Equals, http.StatusOK)
 	c.Assert(err, checker.IsNil)
 

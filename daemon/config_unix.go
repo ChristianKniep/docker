@@ -5,7 +5,7 @@ package daemon
 import (
 	"fmt"
 
-	runconfigopts "github.com/docker/docker/runconfig/opts"
+	"github.com/docker/docker/opts"
 	units "github.com/docker/go-units"
 	"github.com/spf13/pflag"
 )
@@ -68,7 +68,7 @@ func (config *Config) InstallFlags(flags *pflag.FlagSet) {
 
 	// Then platform-specific install flags
 	flags.BoolVar(&config.EnableSelinuxSupport, "selinux-enabled", false, "Enable selinux support")
-	flags.Var(runconfigopts.NewUlimitOpt(&config.Ulimits), "default-ulimit", "Default ulimits for containers")
+	flags.Var(opts.NewUlimitOpt(&config.Ulimits), "default-ulimit", "Default ulimits for containers")
 	flags.BoolVar(&config.bridgeConfig.EnableIPTables, "iptables", true, "Enable addition of iptables rules")
 	flags.BoolVar(&config.bridgeConfig.EnableIPForward, "ip-forward", true, "Enable net.ipv4.ip_forward")
 	flags.BoolVar(&config.bridgeConfig.EnableIPMasq, "ip-masq", true, "Enable IP masquerading")
@@ -77,7 +77,7 @@ func (config *Config) InstallFlags(flags *pflag.FlagSet) {
 	flags.StringVar(&config.bridgeConfig.FixedCIDRv6, "fixed-cidr-v6", "", "IPv6 subnet for fixed IPs")
 	flags.BoolVar(&config.bridgeConfig.EnableUserlandProxy, "userland-proxy", true, "Use userland proxy for loopback traffic")
 	flags.StringVar(&config.bridgeConfig.UserlandProxyPath, "userland-proxy-path", "", "Path to the userland proxy binary")
-	flags.BoolVar(&config.EnableCors, "api-enable-cors", false, "Enable CORS headers in the remote API, this is deprecated by --api-cors-header")
+	flags.BoolVar(&config.EnableCors, "api-enable-cors", false, "Enable CORS headers in the Engine API, this is deprecated by --api-cors-header")
 	flags.MarkDeprecated("api-enable-cors", "Please use --api-cors-header")
 	flags.StringVar(&config.CgroupParent, "cgroup-parent", "", "Set parent cgroup for all containers")
 	flags.StringVar(&config.RemappedRoot, "userns-remap", "", "User/Group setting for user namespaces")

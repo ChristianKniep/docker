@@ -88,7 +88,7 @@ func setDevices(s *specs.Spec, c *container.Container) error {
 			return err
 		}
 		for _, d := range hostDevices {
-			devs = append(devs, specDevice(d))
+			devs = append(devs, oci.Device(d))
 		}
 		rwm := "rwm"
 		devPermissions = []specs.DeviceCgroup{
@@ -99,7 +99,7 @@ func setDevices(s *specs.Spec, c *container.Container) error {
 		}
 	} else {
 		for _, deviceMapping := range c.HostConfig.Devices {
-			d, dPermissions, err := getDevicesFromPath(deviceMapping)
+			d, dPermissions, err := oci.DevicesFromPath(deviceMapping.PathOnHost, deviceMapping.PathInContainer, deviceMapping.CgroupPermissions)
 			if err != nil {
 				return err
 			}
@@ -221,18 +221,6 @@ func setCapabilities(s *specs.Spec, c *container.Container) error {
 	return nil
 }
 
-func delNamespace(s *specs.Spec, nsType specs.NamespaceType) {
-	idx := -1
-	for i, n := range s.Linux.Namespaces {
-		if n.Type == nsType {
-			idx = i
-		}
-	}
-	if idx >= 0 {
-		s.Linux.Namespaces = append(s.Linux.Namespaces[:idx], s.Linux.Namespaces[idx+1:]...)
-	}
-}
-
 func setNamespaces(daemon *Daemon, s *specs.Spec, c *container.Container) error {
 	userNS := false
 	// user
@@ -283,7 +271,7 @@ func setNamespaces(daemon *Daemon, s *specs.Spec, c *container.Container) error 
 			setNamespace(s, nsUser)
 		}
 	} else if c.HostConfig.IpcMode.IsHost() {
-		delNamespace(s, specs.NamespaceType("ipc"))
+		oci.RemoveNamespace(s, specs.NamespaceType("ipc"))
 	} else {
 		ns := specs.Namespace{Type: "ipc"}
 		setNamespace(s, ns)
@@ -304,14 +292,14 @@ func setNamespaces(daemon *Daemon, s *specs.Spec, c *container.Container) error 
 			setNamespace(s, nsUser)
 		}
 	} else if c.HostConfig.PidMode.IsHost() {
-		delNamespace(s, specs.NamespaceType("pid"))
+		oci.RemoveNamespace(s, specs.NamespaceType("pid"))
 	} else {
 		ns := specs.Namespace{Type: "pid"}
 		setNamespace(s, ns)
 	}
 	// uts
 	if c.HostConfig.UTSMode.IsHost() {
-		delNamespace(s, specs.NamespaceType("uts"))
+		oci.RemoveNamespace(s, specs.NamespaceType("uts"))
 		s.Hostname = ""
 	}
 
@@ -745,12 +733,27 @@ func (daemon *Daemon) createSpec(c *container.Container) (*specs.Spec, error) {
 	}
 
 	if apparmor.IsEnabled() {
-		appArmorProfile := "docker-default"
-		if len(c.AppArmorProfile) > 0 {
+		var appArmorProfile string
+		if c.AppArmorProfile != "" {
 			appArmorProfile = c.AppArmorProfile
 		} else if c.HostConfig.Privileged {
 			appArmorProfile = "unconfined"
+		} else {
+			appArmorProfile = "docker-default"
 		}
+
+		if appArmorProfile == "docker-default" {
+			// Unattended upgrades and other fun services can unload AppArmor
+			// profiles inadvertently. Since we cannot store our profile in
+			// /etc/apparmor.d, nor can we practically add other ways of
+			// telling the system to keep our profile loaded, in order to make
+			// sure that we keep the default profile enabled we dynamically
+			// reload it if necessary.
+			if err := ensureDefaultAppArmorProfile(); err != nil {
+				return nil, err
+			}
+		}
+
 		s.Process.ApparmorProfile = appArmorProfile
 	}
 	s.Process.SelinuxLabel = c.GetProcessLabel()

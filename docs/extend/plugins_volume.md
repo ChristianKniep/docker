@@ -22,6 +22,10 @@ beyond the lifetime of a single Engine host. See the
 
 ## Changelog
 
+### 1.13.0
+
+- If used as part of the v2 plugin architecture, mountpoints that are part of paths returned by plugin have to be mounted under the directory specified by PropagatedMount in the plugin configuration [#26398](https://github.com/docker/docker/pull/26398)
+
 ### 1.12.0
 
 - Add `Status` field to `VolumeDriver.Get` response ([#21006](https://github.com/docker/docker/pull/21006#))
@@ -165,7 +169,7 @@ Docker needs reminding of the path to the volume on the host.
 
 Respond with the path on the host filesystem where the volume has been made
 available, and/or a string error if an error occurred. `Mountpoint` is optional,
-however the plugin may be queried again later if one is not provided.
+however, the plugin may be queried again later if one is not provided.
 
 ### /VolumeDriver.Unmount
 
@@ -253,7 +257,7 @@ Respond with a string error if an error occurred. `Mountpoint` is optional.
 ```
 
 Get the list of capabilities the driver supports.
-The driver is not required to implement this endpoint, however in such cases
+The driver is not required to implement this endpoint, however, in such cases
 the default values will be taken.
 
 **Response**:

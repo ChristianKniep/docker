@@ -19,7 +19,7 @@ import (
 )
 
 // ContainerStart starts a container.
-func (daemon *Daemon) ContainerStart(name string, hostConfig *containertypes.HostConfig, validateHostname bool, checkpoint string, checkpointDir string) error {
+func (daemon *Daemon) ContainerStart(name string, hostConfig *containertypes.HostConfig, checkpoint string, checkpointDir string) error {
 	if checkpoint != "" && !daemon.HasExperimental() {
 		return apierrors.NewBadRequestError(fmt.Errorf("checkpoint is only supported in experimental mode"))
 	}
@@ -73,7 +73,7 @@ func (daemon *Daemon) ContainerStart(name string, hostConfig *containertypes.Hos
 
 	// check if hostConfig is in line with the current system settings.
 	// It may happen cgroups are umounted or the like.
-	if _, err = daemon.verifyContainerSettings(container.HostConfig, nil, false, validateHostname); err != nil {
+	if _, err = daemon.verifyContainerSettings(container.HostConfig, nil, false); err != nil {
 		return err
 	}
 	// Adapt for old containers in case we have updates in this function and
@@ -119,6 +119,9 @@ func (daemon *Daemon) containerStart(container *container.Container, checkpoint 
 				container.SetExitCode(128)
 			}
 			container.ToDisk()
+
+			container.Reset(false)
+
 			daemon.Cleanup(container)
 			// if containers AutoRemove flag is set, remove it after clean up
 			if container.HostConfig.AutoRemove {
@@ -186,8 +189,6 @@ func (daemon *Daemon) containerStart(container *container.Container, checkpoint 
 			errDesc += ": Are you trying to mount a directory onto a file (or vice-versa)? Check if the specified host path exists and is the expected type"
 			container.SetExitCode(127)
 		}
-
-		container.Reset(false)
 
 		return fmt.Errorf("%s", errDesc)
 	}

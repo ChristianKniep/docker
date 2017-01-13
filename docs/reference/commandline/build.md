@@ -38,8 +38,7 @@ Options:
       --label value             Set metadata for an image (default [])
   -m, --memory string           Memory limit
       --memory-swap string      Swap limit equal to memory plus swap: '-1' to enable unlimited swap
-      --network string          Set the networking mode for the run commands
-                                during build.
+      --network string          Set the networking mode for the RUN instructions during build
                                 'bridge': use default Docker bridge
                                 'none': no networking
                                 'container:<name|id>': reuse another container's network stack
@@ -54,7 +53,7 @@ Options:
                                 The format is `<number><unit>`. `number` must be greater than `0`.
                                 Unit is optional and can be `b` (bytes), `k` (kilobytes), `m` (megabytes),
                                 or `g` (gigabytes). If you omit the unit, the system uses bytes.
-  --squash                      Squash newly built layers into a single new layer (**Experimental Only**) 
+      --squash                  Squash newly built layers into a single new layer (**Experimental Only**)
   -t, --tag value               Name and optionally a tag in the 'name:tag' format (default [])
       --ulimit value            Ulimit options (default [])
 ```
@@ -263,7 +262,7 @@ Successfully built 377c409b35e4
 This sends the URL `http://server/ctx.tar.gz` to the Docker daemon, which
 downloads and extracts the referenced tarball. The `-f ctx/Dockerfile`
 parameter specifies a path inside `ctx.tar.gz` to the `Dockerfile` that is used
-to build the image. Any `ADD` commands in that `Dockerfile` that refer to local
+to build the image. Any `ADD` commands in that `Dockerfile` that refers to local
 paths must be relative to the root of the contents inside `ctx.tar.gz`. In the
 example above, the tarball contains a directory `ctx/`, so the `ADD
 ctx/container.cfg /` operation works as expected.
@@ -439,7 +438,7 @@ Specifying the `--isolation` flag without a value is the same as setting `--isol
 
 Once the image is built, squash the new layers into a new image with a single
 new layer. Squashing does not destroy any existing image, rather it creates a new
-image with the content of the squshed layers. This effectively makes it look
+image with the content of the squashed layers. This effectively makes it look
 like all `Dockerfile` commands were created with a single layer. The build
 cache is preserved with this method.
 

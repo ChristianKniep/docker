@@ -65,7 +65,8 @@ func (sr *swarmRouter) updateCluster(ctx context.Context, w http.ResponseWriter,
 	rawVersion := r.URL.Query().Get("version")
 	version, err := strconv.ParseUint(rawVersion, 10, 64)
 	if err != nil {
-		return fmt.Errorf("Invalid swarm version '%s': %s", rawVersion, err.Error())
+		err := fmt.Errorf("invalid swarm version '%s': %v", rawVersion, err)
+		return errors.NewBadRequestError(err)
 	}
 
 	var flags types.UpdateFlags
@@ -73,7 +74,8 @@ func (sr *swarmRouter) updateCluster(ctx context.Context, w http.ResponseWriter,
 	if value := r.URL.Query().Get("rotateWorkerToken"); value != "" {
 		rot, err := strconv.ParseBool(value)
 		if err != nil {
-			return fmt.Errorf("invalid value for rotateWorkerToken: %s", value)
+			err := fmt.Errorf("invalid value for rotateWorkerToken: %s", value)
+			return errors.NewBadRequestError(err)
 		}
 
 		flags.RotateWorkerToken = rot
@@ -82,7 +84,8 @@ func (sr *swarmRouter) updateCluster(ctx context.Context, w http.ResponseWriter,
 	if value := r.URL.Query().Get("rotateManagerToken"); value != "" {
 		rot, err := strconv.ParseBool(value)
 		if err != nil {
-			return fmt.Errorf("invalid value for rotateManagerToken: %s", value)
+			err := fmt.Errorf("invalid value for rotateManagerToken: %s", value)
+			return errors.NewBadRequestError(err)
 		}
 
 		flags.RotateManagerToken = rot
@@ -91,7 +94,7 @@ func (sr *swarmRouter) updateCluster(ctx context.Context, w http.ResponseWriter,
 	if value := r.URL.Query().Get("rotateManagerUnlockKey"); value != "" {
 		rot, err := strconv.ParseBool(value)
 		if err != nil {
-			return fmt.Errorf("invalid value for rotateManagerUnlockKey: %s", value)
+			return errors.NewBadRequestError(fmt.Errorf("invalid value for rotateManagerUnlockKey: %s", value))
 		}
 
 		flags.RotateManagerUnlockKey = rot
@@ -184,7 +187,8 @@ func (sr *swarmRouter) updateService(ctx context.Context, w http.ResponseWriter,
 	rawVersion := r.URL.Query().Get("version")
 	version, err := strconv.ParseUint(rawVersion, 10, 64)
 	if err != nil {
-		return fmt.Errorf("Invalid service version '%s': %s", rawVersion, err.Error())
+		err := fmt.Errorf("invalid service version '%s': %v", rawVersion, err)
+		return errors.NewBadRequestError(err)
 	}
 
 	// Get returns "" if the header does not exist
@@ -235,10 +239,6 @@ func (sr *swarmRouter) getServiceLogs(ctx context.Context, w http.ResponseWriter
 			Details:    httputils.BoolValue(r, "details"),
 		},
 		OutStream: w,
-	}
-
-	if !logsConfig.Follow {
-		return fmt.Errorf("Bad parameters: Only follow mode is currently supported")
 	}
 
 	if logsConfig.Details {
@@ -298,7 +298,8 @@ func (sr *swarmRouter) updateNode(ctx context.Context, w http.ResponseWriter, r 
 	rawVersion := r.URL.Query().Get("version")
 	version, err := strconv.ParseUint(rawVersion, 10, 64)
 	if err != nil {
-		return fmt.Errorf("Invalid node version '%s': %s", rawVersion, err.Error())
+		err := fmt.Errorf("invalid node version '%s': %v", rawVersion, err)
+		return errors.NewBadRequestError(err)
 	}
 
 	if err := sr.backend.UpdateNode(vars["id"], version, node); err != nil {
@@ -387,6 +388,7 @@ func (sr *swarmRouter) removeSecret(ctx context.Context, w http.ResponseWriter, 
 	if err := sr.backend.RemoveSecret(vars["id"]); err != nil {
 		return err
 	}
+	w.WriteHeader(http.StatusNoContent)
 
 	return nil
 }

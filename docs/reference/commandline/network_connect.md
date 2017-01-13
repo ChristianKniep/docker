@@ -23,8 +23,8 @@ Connect a container to a network
 Options:
       --alias value           Add network-scoped alias for the container (default [])
       --help                  Print usage
-      --ip string             IP Address
-      --ip6 string            IPv6 Address
+      --ip string             IPv4 address (e.g., 172.30.100.104)
+      --ip6 string            IPv6 address (e.g., 2001:db8::33)
       --link value            Add link to another container (default [])
       --link-local-ip value   Add a link-local address for the container (default [])
 ```
@@ -61,11 +61,8 @@ being connected to.
 ```bash
 $ docker network connect --alias db --alias mysql multi-host-network container2
 ```
-
 You can pause, restart, and stop containers that are connected to a network.
-Paused containers remain connected and can be revealed by a `network inspect`.
-When the container is stopped, it does not appear on the network until you restart
-it.
+A container connects to its configured networks when it runs.
 
 If specified, the container's IP address(es) is reapplied when a stopped
 container is restarted. If the IP address is no longer available, the container

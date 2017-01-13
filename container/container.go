@@ -19,6 +19,7 @@ import (
 	containertypes "github.com/docker/docker/api/types/container"
 	mounttypes "github.com/docker/docker/api/types/mount"
 	networktypes "github.com/docker/docker/api/types/network"
+	swarmtypes "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/container/stream"
 	"github.com/docker/docker/daemon/exec"
 	"github.com/docker/docker/daemon/logger"
@@ -27,6 +28,7 @@ import (
 	"github.com/docker/docker/image"
 	"github.com/docker/docker/layer"
 	"github.com/docker/docker/libcontainerd"
+	"github.com/docker/docker/opts"
 	"github.com/docker/docker/pkg/idtools"
 	"github.com/docker/docker/pkg/ioutils"
 	"github.com/docker/docker/pkg/promise"
@@ -34,13 +36,13 @@ import (
 	"github.com/docker/docker/pkg/symlink"
 	"github.com/docker/docker/restartmanager"
 	"github.com/docker/docker/runconfig"
-	runconfigopts "github.com/docker/docker/runconfig/opts"
 	"github.com/docker/docker/volume"
 	"github.com/docker/go-connections/nat"
 	"github.com/docker/libnetwork"
 	"github.com/docker/libnetwork/netlabel"
 	"github.com/docker/libnetwork/options"
 	"github.com/docker/libnetwork/types"
+	agentexec "github.com/docker/swarmkit/agent/exec"
 	"github.com/opencontainers/runc/libcontainer/label"
 )
 
@@ -68,7 +70,7 @@ func (DetachError) Error() string {
 type CommonContainer struct {
 	StreamConfig *stream.Config
 	// embed for Container to support states directly.
-	*State          `json:"State"` // Needed for remote api version <= 1.11
+	*State          `json:"State"` // Needed for Engine API version <= 1.11
 	Root            string         `json:"-"` // Path to the "home" of the container, including metadata.
 	BaseFS          string         `json:"-"` // Path to the graphdriver mountpoint
 	RWLayer         layer.RWLayer  `json:"-"`
@@ -90,9 +92,10 @@ type CommonContainer struct {
 	HasBeenStartedBefore   bool
 	HasBeenManuallyStopped bool // used for unless-stopped restart policy
 	MountPoints            map[string]*volume.MountPoint
-	HostConfig             *containertypes.HostConfig        `json:"-"` // do not serialize the host config in the json, otherwise we'll make the container unportable
-	ExecCommands           *exec.Store                       `json:"-"`
-	Secrets                []*containertypes.ContainerSecret `json:"-"` // do not serialize
+	HostConfig             *containertypes.HostConfig `json:"-"` // do not serialize the host config in the json, otherwise we'll make the container unportable
+	ExecCommands           *exec.Store                `json:"-"`
+	SecretStore            agentexec.SecretGetter     `json:"-"`
+	SecretReferences       []*swarmtypes.SecretReference
 	// logDriver for closing
 	LogDriver      logger.Logger  `json:"-"`
 	LogCopier      *logger.Copier `json:"-"`
@@ -226,7 +229,7 @@ func (container *Container) SetupWorkingDirectory(rootUID, rootGID int) error {
 
 	container.Config.WorkingDir = filepath.Clean(container.Config.WorkingDir)
 
-	// If can't mount container FS at this point (eg Hyper-V Containers on
+	// If can't mount container FS at this point (e.g. Hyper-V Containers on
 	// Windows) bail out now with no action.
 	if !container.canMountFS() {
 		return nil
@@ -319,12 +322,13 @@ func (container *Container) CheckpointDir() string {
 }
 
 // StartLogger starts a new logger driver for the container.
-func (container *Container) StartLogger(cfg containertypes.LogConfig) (logger.Logger, error) {
+func (container *Container) StartLogger() (logger.Logger, error) {
+	cfg := container.HostConfig.LogConfig
 	c, err := logger.GetLogDriver(cfg.Type)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get logging factory: %v", err)
+		return nil, fmt.Errorf("failed to get logging factory: %v", err)
 	}
-	ctx := logger.Context{
+	info := logger.Info{
 		Config:              cfg.Config,
 		ContainerID:         container.ID,
 		ContainerName:       container.Name,
@@ -340,12 +344,12 @@ func (container *Container) StartLogger(cfg containertypes.LogConfig) (logger.Lo
 
 	// Set logging file for "json-logger"
 	if cfg.Type == jsonfilelog.Name {
-		ctx.LogPath, err = container.GetRootResourcePath(fmt.Sprintf("%s-json.log", container.ID))
+		info.LogPath, err = container.GetRootResourcePath(fmt.Sprintf("%s-json.log", container.ID))
 		if err != nil {
 			return nil, err
 		}
 	}
-	return c(ctx)
+	return c(info)
 }
 
 // GetProcessLabel returns the process label for the container.
@@ -811,7 +815,7 @@ func (container *Container) BuildJoinOptions(n libnetwork.Network) ([]libnetwork
 	var joinOptions []libnetwork.EndpointOption
 	if epConfig, ok := container.NetworkSettings.Networks[n.Name()]; ok {
 		for _, str := range epConfig.Links {
-			name, alias, err := runconfigopts.ParseLink(str)
+			name, alias, err := opts.ParseLink(str)
 			if err != nil {
 				return nil, err
 			}
@@ -1047,9 +1051,9 @@ func (container *Container) startLogging() error {
 		return nil // do not start logging routines
 	}
 
-	l, err := container.StartLogger(container.HostConfig.LogConfig)
+	l, err := container.StartLogger()
 	if err != nil {
-		return fmt.Errorf("Failed to initialize logging driver: %v", err)
+		return fmt.Errorf("failed to initialize logging driver: %v", err)
 	}
 
 	copier := logger.NewCopier(map[string]io.Reader{"stdout": container.StdoutPipe(), "stderr": container.StderrPipe()}, l)

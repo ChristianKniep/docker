@@ -3,6 +3,7 @@ package container
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -10,12 +11,11 @@ import (
 	"time"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/api/server/httputils"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/backend"
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/api/types/versions"
+	"github.com/docker/docker/daemon/cluster/convert"
 	executorpkg "github.com/docker/docker/daemon/cluster/executor"
 	"github.com/docker/docker/reference"
 	"github.com/docker/libnetwork"
@@ -23,6 +23,7 @@ import (
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/log"
 	"github.com/docker/swarmkit/protobuf/ptypes"
+	"github.com/opencontainers/go-digest"
 	"golang.org/x/net/context"
 	"golang.org/x/time/rate"
 )
@@ -51,6 +52,11 @@ func newContainerAdapter(b executorpkg.Backend, task *api.Task, secrets exec.Sec
 
 func (c *containerAdapter) pullImage(ctx context.Context) error {
 	spec := c.container.spec()
+
+	// Skip pulling if the image is referenced by image ID.
+	if _, err := digest.Parse(spec.Image); err == nil {
+		return nil
+	}
 
 	// Skip pulling if the image is referenced by digest and already
 	// exists locally.
@@ -208,8 +214,6 @@ func (c *containerAdapter) waitForDetach(ctx context.Context) error {
 func (c *containerAdapter) create(ctx context.Context) error {
 	var cr containertypes.ContainerCreateCreatedBody
 	var err error
-	version := httputils.VersionFromContext(ctx)
-	validateHostname := versions.GreaterThanOrEqualTo(version, "1.24")
 
 	if cr, err = c.backend.CreateManagedContainer(types.ContainerCreateConfig{
 		Name:       c.container.name(),
@@ -217,7 +221,7 @@ func (c *containerAdapter) create(ctx context.Context) error {
 		HostConfig: c.container.hostConfig(),
 		// Use the first network in container create
 		NetworkingConfig: c.container.createNetworkingConfig(),
-	}, validateHostname); err != nil {
+	}); err != nil {
 		return err
 	}
 
@@ -235,35 +239,16 @@ func (c *containerAdapter) create(ctx context.Context) error {
 
 	container := c.container.task.Spec.GetContainer()
 	if container == nil {
-		return fmt.Errorf("unable to get container from task spec")
-	}
-	secrets := make([]*containertypes.ContainerSecret, 0, len(container.Secrets))
-	for _, s := range container.Secrets {
-		sec := c.secrets.Get(s.SecretID)
-		if sec == nil {
-			logrus.Warnf("unable to get secret %s from provider", s.SecretID)
-			continue
-		}
-
-		name := sec.Spec.Annotations.Name
-		target := s.GetFile()
-		if target == nil {
-			logrus.Warnf("secret target was not a file: secret=%s", s.SecretID)
-			continue
-		}
-
-		secrets = append(secrets, &containertypes.ContainerSecret{
-			Name:   name,
-			Target: target.Name,
-			Data:   sec.Spec.Data,
-			UID:    target.UID,
-			GID:    target.GID,
-			Mode:   target.Mode,
-		})
+		return errors.New("unable to get container from task spec")
 	}
 
 	// configure secrets
-	if err := c.backend.SetContainerSecrets(cr.ID, secrets); err != nil {
+	if err := c.backend.SetContainerSecretStore(cr.ID, c.secrets); err != nil {
+		return err
+	}
+
+	refs := convert.SecretReferencesFromGRPC(container.Secrets)
+	if err := c.backend.SetContainerSecretReferences(cr.ID, refs); err != nil {
 		return err
 	}
 
@@ -275,9 +260,7 @@ func (c *containerAdapter) create(ctx context.Context) error {
 }
 
 func (c *containerAdapter) start(ctx context.Context) error {
-	version := httputils.VersionFromContext(ctx)
-	validateHostname := versions.GreaterThanOrEqualTo(version, "1.24")
-	return c.backend.ContainerStart(c.container.name(), nil, validateHostname, "", "")
+	return c.backend.ContainerStart(c.container.name(), nil, "", "")
 }
 
 func (c *containerAdapter) inspect(ctx context.Context) (types.ContainerJSON, error) {
@@ -419,7 +402,7 @@ func (c *containerAdapter) logs(ctx context.Context, options api.LogSubscription
 		// See protobuf documentation for details of how this works.
 		apiOptions.Tail = fmt.Sprint(-options.Tail - 1)
 	} else if options.Tail > 0 {
-		return nil, fmt.Errorf("tail relative to start of logs not supported via docker API")
+		return nil, errors.New("tail relative to start of logs not supported via docker API")
 	}
 
 	if len(options.Streams) == 0 {
@@ -437,7 +420,11 @@ func (c *containerAdapter) logs(ctx context.Context, options api.LogSubscription
 	}
 
 	chStarted := make(chan struct{})
-	go c.backend.ContainerLogs(ctx, c.container.name(), apiOptions, chStarted)
+	go func() {
+		defer writer.Close()
+		c.backend.ContainerLogs(ctx, c.container.name(), apiOptions, chStarted)
+	}()
+
 	return reader, nil
 }
 

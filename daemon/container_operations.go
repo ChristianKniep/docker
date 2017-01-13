@@ -410,7 +410,7 @@ func (daemon *Daemon) findAndAttachNetwork(container *container.Container, idOrN
 	return n, config, nil
 }
 
-// updateContainerNetworkSettings update the network settings
+// updateContainerNetworkSettings updates the network settings
 func (daemon *Daemon) updateContainerNetworkSettings(container *container.Container, endpointsConfig map[string]*networktypes.EndpointSettings) {
 	var n libnetwork.Network
 
@@ -808,7 +808,7 @@ func (daemon *Daemon) disconnectFromNetwork(container *container.Container, n li
 	}
 
 	if ep == nil {
-		return fmt.Errorf("container %s is not connected to the network", container.ID)
+		return fmt.Errorf("container %s is not connected to network %s", container.ID, n.Name())
 	}
 
 	if err := ep.Leave(sbox); err != nil {
@@ -851,9 +851,11 @@ func (daemon *Daemon) initializeNetworking(container *container.Container) error
 	}
 
 	if container.HostConfig.NetworkMode.IsHost() {
-		container.Config.Hostname, err = os.Hostname()
-		if err != nil {
-			return err
+		if container.Config.Hostname == "" {
+			container.Config.Hostname, err = os.Hostname()
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1028,12 +1030,12 @@ func (daemon *Daemon) ActivateContainerServiceBinding(containerName string) erro
 	}
 	sb := daemon.getNetworkSandbox(container)
 	if sb == nil {
-		return fmt.Errorf("network sandbox not exists for container %s", containerName)
+		return fmt.Errorf("network sandbox does not exist for container %s", containerName)
 	}
 	return sb.EnableService()
 }
 
-// DeactivateContainerServiceBinding remove this container fromload balancer active rotation, and DNS response
+// DeactivateContainerServiceBinding removes this container from load balancer active rotation, and DNS response
 func (daemon *Daemon) DeactivateContainerServiceBinding(containerName string) error {
 	container, err := daemon.GetContainer(containerName)
 	if err != nil {
@@ -1041,7 +1043,7 @@ func (daemon *Daemon) DeactivateContainerServiceBinding(containerName string) er
 	}
 	sb := daemon.getNetworkSandbox(container)
 	if sb == nil {
-		return fmt.Errorf("network sandbox not exists for container %s", containerName)
+		return fmt.Errorf("network sandbox does not exist for container %s", containerName)
 	}
 	return sb.DisableService()
 }

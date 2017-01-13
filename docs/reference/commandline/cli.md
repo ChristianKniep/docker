@@ -26,7 +26,6 @@ Usage: docker [OPTIONS] COMMAND [ARG...]
 A self-sufficient runtime for containers.
 
 Options:
-
       --config string      Location of client config files (default "/root/.docker")
   -D, --debug              Enable debug mode
       --help               Print usage
@@ -70,10 +69,13 @@ by the `docker` command line:
   Equates to `--disable-content-trust=false` for build, create, pull, push, run.
 * `DOCKER_CONTENT_TRUST_SERVER` The URL of the Notary server to use. This defaults
   to the same URL as the registry.
+* `DOCKER_HIDE_LEGACY_COMMANDS` When set, Docker hides "legacy" top-level commands (such as `docker rm`, and 
+  `docker pull`) in `docker help` output, and only `Management commands` per object-type (e.g., `docker container`) are
+  printed. This may become the default in a future release, at which point this environment-variable is removed.
 * `DOCKER_TMPDIR` Location for temporary Docker files.
 
-Because Docker is developed using 'Go', you can also use any environment
-variables used by the 'Go' runtime. In particular, you may find these useful:
+Because Docker is developed using Go, you can also use any environment
+variables used by the Go runtime. In particular, you may find these useful:
 
 * `HTTP_PROXY`
 * `HTTPS_PROXY`
@@ -143,6 +145,20 @@ property is not set, the client falls back to the default table
 format. For a list of supported formatting directives, see
 [**Formatting** section in the `docker stats` documentation](stats.md)
 
+The property `credsStore` specifies an external binary to serve as the default
+credential store. When this property is set, `docker login` will attempt to
+store credentials in the binary specified by `docker-credential-<value>` which
+is visible on `$PATH`. If this property is not set, credentials will be stored
+in the `auths` property of the config. For more information, see the
+[**Credentials store** section in the `docker login` documentation](login.md#credentials-store)
+
+The property `credHelpers` specifies a set of credential helpers to use
+preferentially over `credsStore` or `auths` when storing and retrieving
+credentials for specific registries. If this property is set, the binary
+`docker-credential-<value>` will be used when storing or retrieving credentials
+for a specific registry. For more information, see the
+[**Credential helpers** section in the `docker login` documentation](login.md#credential-helpers)
+
 Once attached to a container, users detach from it and leave it running using
 the using `CTRL-p CTRL-q` key sequence. This detach key sequence is customizable
 using the `detachKeys` property. Specify a `<sequence>` value for the
@@ -172,7 +188,12 @@ Following is a sample `config.json` file:
       "imagesFormat": "table {{.ID}}\\t{{.Repository}}\\t{{.Tag}}\\t{{.CreatedAt}}",
       "statsFormat": "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}",
       "serviceInspectFormat": "pretty",
-      "detachKeys": "ctrl-e,e"
+      "detachKeys": "ctrl-e,e",
+      "credsStore": "secretservice",
+      "credHelpers": {
+        "awesomereg.example.org": "hip-star",
+        "unicorn.example.com": "vcbait"
+      }
     }
     {% endraw %}
 

@@ -65,6 +65,7 @@ type NetworkInfo interface {
 	Scope() string
 	IPv6Enabled() bool
 	Internal() bool
+	Attachable() bool
 	Labels() map[string]string
 	Dynamic() bool
 	Created() time.Time
@@ -79,10 +80,18 @@ type NetworkInfo interface {
 // When the function returns true, the walk will stop.
 type EndpointWalker func(ep Endpoint) bool
 
+// ipInfo is the reverse mapping from IP to service name to serve the PTR query.
+// extResolver is set if an externl server resolves a service name to this IP.
+// Its an indication to defer PTR queries also to that external server.
+type ipInfo struct {
+	name        string
+	extResolver bool
+}
+
 type svcInfo struct {
 	svcMap     map[string][]net.IP
 	svcIPv6Map map[string][]net.IP
-	ipMap      map[string]string
+	ipMap      map[string]*ipInfo
 	service    map[string][]servicePorts
 }
 
@@ -196,6 +205,7 @@ type network struct {
 	resolverOnce sync.Once
 	resolver     []Resolver
 	internal     bool
+	attachable   bool
 	inDelete     bool
 	ingress      bool
 	driverTables []string
@@ -348,6 +358,7 @@ func (n *network) CopyTo(o datastore.KVObject) error {
 	dstN.dbExists = n.dbExists
 	dstN.drvOnce = n.drvOnce
 	dstN.internal = n.internal
+	dstN.attachable = n.attachable
 	dstN.inDelete = n.inDelete
 	dstN.ingress = n.ingress
 
@@ -456,6 +467,7 @@ func (n *network) MarshalJSON() ([]byte, error) {
 		netMap["ipamV6Info"] = string(iis)
 	}
 	netMap["internal"] = n.internal
+	netMap["attachable"] = n.attachable
 	netMap["inDelete"] = n.inDelete
 	netMap["ingress"] = n.ingress
 	return json.Marshal(netMap)
@@ -550,6 +562,9 @@ func (n *network) UnmarshalJSON(b []byte) (err error) {
 	if v, ok := netMap["internal"]; ok {
 		n.internal = v.(bool)
 	}
+	if v, ok := netMap["attachable"]; ok {
+		n.attachable = v.(bool)
+	}
 	if s, ok := netMap["scope"]; ok {
 		n.scope = s.(string)
 	}
@@ -625,6 +640,13 @@ func NetworkOptionInternalNetwork() NetworkOption {
 		}
 		n.internal = true
 		n.generic[netlabel.Internal] = true
+	}
+}
+
+// NetworkOptionAttachable returns an option setter to set attachable for a network
+func NetworkOptionAttachable(attachable bool) NetworkOption {
+	return func(n *network) {
+		n.attachable = attachable
 	}
 }
 
@@ -863,7 +885,7 @@ func (n *network) CreateEndpoint(name string, options ...EndpointOption) (Endpoi
 	}
 
 	if _, err = n.EndpointByName(name); err == nil {
-		return nil, types.ForbiddenErrorf("service endpoint with name %s already exists", name)
+		return nil, types.ForbiddenErrorf("endpoint with name %s already exists in network %s", name, n.Name())
 	}
 
 	ep := &endpoint{name: name, generic: make(map[string]interface{}), iface: &endpointInterface{}}
@@ -1056,10 +1078,12 @@ func (n *network) updateSvcRecord(ep *endpoint, localEps []*endpoint, isAdd bool
 	}
 }
 
-func addIPToName(ipMap map[string]string, name string, ip net.IP) {
+func addIPToName(ipMap map[string]*ipInfo, name string, ip net.IP) {
 	reverseIP := netutils.ReverseIP(ip.String())
 	if _, ok := ipMap[reverseIP]; !ok {
-		ipMap[reverseIP] = name
+		ipMap[reverseIP] = &ipInfo{
+			name: name,
+		}
 	}
 }
 
@@ -1103,7 +1127,7 @@ func (n *network) addSvcRecords(name string, epIP net.IP, epIPv6 net.IP, ipMapUp
 		sr = svcInfo{
 			svcMap:     make(map[string][]net.IP),
 			svcIPv6Map: make(map[string][]net.IP),
-			ipMap:      make(map[string]string),
+			ipMap:      make(map[string]*ipInfo),
 		}
 		c.svcRecords[n.ID()] = sr
 	}
@@ -1289,9 +1313,6 @@ func (n *network) ipamAllocateVersion(ipVer int, ipam ipamapi.Ipam) error {
 	}
 
 	if len(*cfgList) == 0 {
-		if ipVer == 6 {
-			return nil
-		}
 		*cfgList = []*IpamConf{{}}
 	}
 
@@ -1474,17 +1495,12 @@ func (n *network) Peers() []networkdb.PeerInfo {
 		return []networkdb.PeerInfo{}
 	}
 
-	var nDB *networkdb.NetworkDB
-	n.ctrlr.Lock()
-	if n.ctrlr.agentInitDone == nil && n.ctrlr.agent != nil {
-		nDB = n.ctrlr.agent.networkDB
+	agent := n.getController().getAgent()
+	if agent == nil {
+		return []networkdb.PeerInfo{}
 	}
-	n.ctrlr.Unlock()
 
-	if nDB != nil {
-		return n.ctrlr.agent.networkDB.Peers(n.id)
-	}
-	return []networkdb.PeerInfo{}
+	return agent.networkDB.Peers(n.ID())
 }
 
 func (n *network) DriverOptions() map[string]string {
@@ -1555,6 +1571,13 @@ func (n *network) Internal() bool {
 	return n.internal
 }
 
+func (n *network) Attachable() bool {
+	n.Lock()
+	defer n.Unlock()
+
+	return n.attachable
+}
+
 func (n *network) Dynamic() bool {
 	n.Lock()
 	defer n.Unlock()
@@ -1599,8 +1622,8 @@ func (n *network) ResolveName(req string, ipType int) ([]net.IP, bool) {
 
 	c := n.getController()
 	c.Lock()
+	defer c.Unlock()
 	sr, ok := c.svcRecords[n.ID()]
-	c.Unlock()
 
 	if !ok {
 		return nil, false
@@ -1608,7 +1631,6 @@ func (n *network) ResolveName(req string, ipType int) ([]net.IP, bool) {
 
 	req = strings.TrimSuffix(req, ".")
 	var ip []net.IP
-	n.Lock()
 	ip, ok = sr.svcMap[req]
 
 	if ipType == types.IPv6 {
@@ -1621,22 +1643,38 @@ func (n *network) ResolveName(req string, ipType int) ([]net.IP, bool) {
 		}
 		ip = sr.svcIPv6Map[req]
 	}
-	n.Unlock()
 
 	if ip != nil {
-		return ip, false
+		ipLocal := make([]net.IP, len(ip))
+		copy(ipLocal, ip)
+		return ipLocal, false
 	}
 
 	return nil, ipv6Miss
 }
 
-func (n *network) ResolveIP(ip string) string {
-	var svc string
-
+func (n *network) HandleQueryResp(name string, ip net.IP) {
 	c := n.getController()
 	c.Lock()
+	defer c.Unlock()
 	sr, ok := c.svcRecords[n.ID()]
-	c.Unlock()
+
+	if !ok {
+		return
+	}
+
+	ipStr := netutils.ReverseIP(ip.String())
+
+	if ipInfo, ok := sr.ipMap[ipStr]; ok {
+		ipInfo.extResolver = true
+	}
+}
+
+func (n *network) ResolveIP(ip string) string {
+	c := n.getController()
+	c.Lock()
+	defer c.Unlock()
+	sr, ok := c.svcRecords[n.ID()]
 
 	if !ok {
 		return ""
@@ -1644,15 +1682,13 @@ func (n *network) ResolveIP(ip string) string {
 
 	nwName := n.Name()
 
-	n.Lock()
-	defer n.Unlock()
-	svc, ok = sr.ipMap[ip]
+	ipInfo, ok := sr.ipMap[ip]
 
-	if ok {
-		return svc + "." + nwName
+	if !ok || ipInfo.extResolver {
+		return ""
 	}
 
-	return svc
+	return ipInfo.name + "." + nwName
 }
 
 func (n *network) ResolveService(name string) ([]*net.SRV, []net.IP) {
@@ -1676,8 +1712,8 @@ func (n *network) ResolveService(name string) ([]*net.SRV, []net.IP) {
 	svcName := strings.Join(parts[2:], ".")
 
 	c.Lock()
+	defer c.Unlock()
 	sr, ok := c.svcRecords[n.ID()]
-	c.Unlock()
 
 	if !ok {
 		return nil, nil

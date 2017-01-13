@@ -26,8 +26,9 @@ import (
 	systemrouter "github.com/docker/docker/api/server/router/system"
 	"github.com/docker/docker/api/server/router/volume"
 	"github.com/docker/docker/builder/dockerfile"
+	cliconfig "github.com/docker/docker/cli/config"
+	"github.com/docker/docker/cli/debug"
 	cliflags "github.com/docker/docker/cli/flags"
-	"github.com/docker/docker/cliconfig"
 	"github.com/docker/docker/daemon"
 	"github.com/docker/docker/daemon/cluster"
 	"github.com/docker/docker/daemon/logger"
@@ -41,10 +42,8 @@ import (
 	"github.com/docker/docker/pkg/plugingetter"
 	"github.com/docker/docker/pkg/signal"
 	"github.com/docker/docker/pkg/system"
-	"github.com/docker/docker/plugin"
 	"github.com/docker/docker/registry"
 	"github.com/docker/docker/runconfig"
-	"github.com/docker/docker/utils"
 	"github.com/docker/go-connections/tlsconfig"
 	"github.com/spf13/pflag"
 )
@@ -76,7 +75,7 @@ func migrateKey(config *daemon.Config) (err error) {
 	}
 
 	// Migrate trust key if exists at ~/.docker/key.json and owned by current user
-	oldPath := filepath.Join(cliconfig.ConfigDir(), cliflags.DefaultTrustKeyFile)
+	oldPath := filepath.Join(cliconfig.Dir(), cliflags.DefaultTrustKeyFile)
 	newPath := filepath.Join(getDaemonConfDir(config.Root), cliflags.DefaultTrustKeyFile)
 	if _, statErr := os.Stat(newPath); os.IsNotExist(statErr) && currentUserIsOwner(oldPath) {
 		defer func() {
@@ -137,7 +136,7 @@ func (cli *DaemonCli) start(opts daemonOptions) (err error) {
 	}
 
 	if cli.Config.Debug {
-		utils.EnableDebug()
+		debug.Enable()
 	}
 
 	if cli.Config.Experimental {
@@ -227,7 +226,7 @@ func (cli *DaemonCli) start(opts daemonOptions) (err error) {
 
 		// It's a bad idea to bind to TCP without tlsverify.
 		if proto == "tcp" && (serverConfig.TLSConfig == nil || serverConfig.TLSConfig.ClientAuth != tls.RequireAndVerifyClientCert) {
-			logrus.Warn("[!] DON'T BIND ON ANY IP ADDRESS WITHOUT setting -tlsverify IF YOU DON'T KNOW WHAT YOU'RE DOING [!]")
+			logrus.Warn("[!] DON'T BIND ON ANY IP ADDRESS WITHOUT setting --tlsverify IF YOU DON'T KNOW WHAT YOU'RE DOING [!]")
 		}
 		ls, err := listeners.Init(proto, addr, serverConfig.SocketGroup, serverConfig.TLSConfig)
 		if err != nil {
@@ -351,13 +350,13 @@ func (cli *DaemonCli) reloadConfig() {
 		}
 
 		if config.IsValueSet("debug") {
-			debugEnabled := utils.IsDebugEnabled()
+			debugEnabled := debug.IsEnabled()
 			switch {
 			case debugEnabled && !config.Debug: // disable debug
-				utils.DisableDebug()
+				debug.Disable()
 				cli.api.DisableProfiler()
 			case config.Debug && !debugEnabled: // enable debug
-				utils.EnableDebug()
+				debug.Enable()
 				cli.api.EnableProfiler()
 			}
 
@@ -471,7 +470,7 @@ func initRouter(s *apiserver.Server, d *daemon.Daemon, c *cluster.Cluster) {
 		volume.NewRouter(d),
 		build.NewRouter(dockerfile.NewBuildManager(d)),
 		swarmrouter.NewRouter(c),
-		pluginrouter.NewRouter(plugin.GetManager()),
+		pluginrouter.NewRouter(d.PluginManager()),
 	}
 
 	if d.NetworkControllerEnabled() {
@@ -488,7 +487,7 @@ func initRouter(s *apiserver.Server, d *daemon.Daemon, c *cluster.Cluster) {
 		}
 	}
 
-	s.InitRouter(utils.IsDebugEnabled(), routers...)
+	s.InitRouter(debug.IsEnabled(), routers...)
 }
 
 func (cli *DaemonCli) initMiddlewares(s *apiserver.Server, cfg *apiserver.Config) error {
@@ -517,7 +516,7 @@ func (cli *DaemonCli) initMiddlewares(s *apiserver.Server, cfg *apiserver.Config
 // plugins present on the host and available to the daemon
 func validateAuthzPlugins(requestedPlugins []string, pg plugingetter.PluginGetter) error {
 	for _, reqPlugin := range requestedPlugins {
-		if _, err := pg.Get(reqPlugin, authorization.AuthZApiImplements, plugingetter.LOOKUP); err != nil {
+		if _, err := pg.Get(reqPlugin, authorization.AuthZApiImplements, plugingetter.Lookup); err != nil {
 			return err
 		}
 	}

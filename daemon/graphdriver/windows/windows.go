@@ -31,7 +31,8 @@ import (
 	"github.com/docker/docker/pkg/ioutils"
 	"github.com/docker/docker/pkg/longpath"
 	"github.com/docker/docker/pkg/reexec"
-	"github.com/docker/go-units"
+	units "github.com/docker/go-units"
+	"golang.org/x/sys/windows"
 )
 
 // filterDriver is an HCSShim driver type for the Windows Filter driver.
@@ -115,7 +116,7 @@ func win32FromHresult(hr uintptr) uintptr {
 // https://msdn.microsoft.com/en-us/library/windows/desktop/aa364993(v=vs.85).aspx
 func getFileSystemType(drive string) (fsType string, hr error) {
 	var (
-		modkernel32              = syscall.NewLazyDLL("kernel32.dll")
+		modkernel32              = windows.NewLazySystemDLL("kernel32.dll")
 		procGetVolumeInformation = modkernel32.NewProc("GetVolumeInformationW")
 		buf                      = make([]uint16, 255)
 		size                     = syscall.MAX_PATH + 1
@@ -774,11 +775,7 @@ func (d *Driver) resolveID(id string) (string, error) {
 
 // setID stores the layerId in disk.
 func (d *Driver) setID(id, altID string) error {
-	err := ioutil.WriteFile(filepath.Join(d.dir(id), "layerId"), []byte(altID), 0600)
-	if err != nil {
-		return err
-	}
-	return nil
+	return ioutil.WriteFile(filepath.Join(d.dir(id), "layerId"), []byte(altID), 0600)
 }
 
 // getLayerChain returns the layer chain information.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/integration-cli/checker"
+	"github.com/docker/docker/integration-cli/cli"
 	"github.com/docker/docker/pkg/jsonlog"
 	"github.com/docker/docker/pkg/testutil"
 	icmd "github.com/docker/docker/pkg/testutil/cmd"
@@ -17,40 +18,24 @@ import (
 
 // This used to work, it test a log of PageSize-1 (gh#4851)
 func (s *DockerSuite) TestLogsContainerSmallerThanPage(c *check.C) {
-	testLen := 32767
-	out, _ := dockerCmd(c, "run", "-d", "busybox", "sh", "-c", fmt.Sprintf("for i in $(seq 1 %d); do echo -n = >> a.a; done; echo >> a.a; cat a.a", testLen))
-
-	id := strings.TrimSpace(out)
-	dockerCmd(c, "wait", id)
-
-	out, _ = dockerCmd(c, "logs", id)
-
-	c.Assert(out, checker.HasLen, testLen+1)
+	testLogsContainerPagination(c, 32767)
 }
 
 // Regression test: When going over the PageSize, it used to panic (gh#4851)
 func (s *DockerSuite) TestLogsContainerBiggerThanPage(c *check.C) {
-	testLen := 32768
-	out, _ := dockerCmd(c, "run", "-d", "busybox", "sh", "-c", fmt.Sprintf("for i in $(seq 1 %d); do echo -n = >> a.a; done; echo >> a.a; cat a.a", testLen))
-
-	id := strings.TrimSpace(out)
-	dockerCmd(c, "wait", id)
-
-	out, _ = dockerCmd(c, "logs", id)
-
-	c.Assert(out, checker.HasLen, testLen+1)
+	testLogsContainerPagination(c, 32768)
 }
 
 // Regression test: When going much over the PageSize, it used to block (gh#4851)
 func (s *DockerSuite) TestLogsContainerMuchBiggerThanPage(c *check.C) {
-	testLen := 33000
-	out, _ := dockerCmd(c, "run", "-d", "busybox", "sh", "-c", fmt.Sprintf("for i in $(seq 1 %d); do echo -n = >> a.a; done; echo >> a.a; cat a.a", testLen))
+	testLogsContainerPagination(c, 33000)
+}
 
+func testLogsContainerPagination(c *check.C, testLen int) {
+	out, _ := dockerCmd(c, "run", "-d", "busybox", "sh", "-c", fmt.Sprintf("for i in $(seq 1 %d); do echo -n = >> a.a; done; echo >> a.a; cat a.a", testLen))
 	id := strings.TrimSpace(out)
 	dockerCmd(c, "wait", id)
-
 	out, _ = dockerCmd(c, "logs", id)
-
 	c.Assert(out, checker.HasLen, testLen+1)
 }
 
@@ -81,18 +66,13 @@ func (s *DockerSuite) TestLogsTimestamps(c *check.C) {
 
 func (s *DockerSuite) TestLogsSeparateStderr(c *check.C) {
 	msg := "stderr_log"
-	out, _ := dockerCmd(c, "run", "-d", "busybox", "sh", "-c", fmt.Sprintf("echo %s 1>&2", msg))
-
+	out := cli.DockerCmd(c, "run", "-d", "busybox", "sh", "-c", fmt.Sprintf("echo %s 1>&2", msg)).Combined()
 	id := strings.TrimSpace(out)
-	dockerCmd(c, "wait", id)
-
-	stdout, stderr, _ := dockerCmdWithStdoutStderr(c, "logs", id)
-
-	c.Assert(stdout, checker.Equals, "")
-
-	stderr = strings.TrimSpace(stderr)
-
-	c.Assert(stderr, checker.Equals, msg)
+	cli.DockerCmd(c, "wait", id)
+	cli.DockerCmd(c, "logs", id).Assert(c, icmd.Expected{
+		Out: "",
+		Err: msg,
+	})
 }
 
 func (s *DockerSuite) TestLogsStderrInStdout(c *check.C) {
@@ -100,54 +80,51 @@ func (s *DockerSuite) TestLogsStderrInStdout(c *check.C) {
 	// a bunch of ANSI escape sequences before the "stderr_log" message.
 	testRequires(c, DaemonIsLinux)
 	msg := "stderr_log"
-	out, _ := dockerCmd(c, "run", "-d", "-t", "busybox", "sh", "-c", fmt.Sprintf("echo %s 1>&2", msg))
-
+	out := cli.DockerCmd(c, "run", "-d", "-t", "busybox", "sh", "-c", fmt.Sprintf("echo %s 1>&2", msg)).Combined()
 	id := strings.TrimSpace(out)
-	dockerCmd(c, "wait", id)
+	cli.DockerCmd(c, "wait", id)
 
-	stdout, stderr, _ := dockerCmdWithStdoutStderr(c, "logs", id)
-	c.Assert(stderr, checker.Equals, "")
-
-	stdout = strings.TrimSpace(stdout)
-	c.Assert(stdout, checker.Equals, msg)
+	cli.DockerCmd(c, "logs", id).Assert(c, icmd.Expected{
+		Out: msg,
+		Err: "",
+	})
 }
 
 func (s *DockerSuite) TestLogsTail(c *check.C) {
 	testLen := 100
-	out, _ := dockerCmd(c, "run", "-d", "busybox", "sh", "-c", fmt.Sprintf("for i in $(seq 1 %d); do echo =; done;", testLen))
+	out := cli.DockerCmd(c, "run", "-d", "busybox", "sh", "-c", fmt.Sprintf("for i in $(seq 1 %d); do echo =; done;", testLen)).Combined()
 
 	id := strings.TrimSpace(out)
-	dockerCmd(c, "wait", id)
+	cli.DockerCmd(c, "wait", id)
 
-	out, _ = dockerCmd(c, "logs", "--tail", "0", id)
+	out = cli.DockerCmd(c, "logs", "--tail", "0", id).Combined()
 	lines := strings.Split(out, "\n")
 	c.Assert(lines, checker.HasLen, 1)
 
-	out, _ = dockerCmd(c, "logs", "--tail", "5", id)
+	out = cli.DockerCmd(c, "logs", "--tail", "5", id).Combined()
 	lines = strings.Split(out, "\n")
 	c.Assert(lines, checker.HasLen, 6)
 
-	out, _ = dockerCmd(c, "logs", "--tail", "99", id)
+	out = cli.DockerCmd(c, "logs", "--tail", "99", id).Combined()
 	lines = strings.Split(out, "\n")
 	c.Assert(lines, checker.HasLen, 100)
 
-	out, _ = dockerCmd(c, "logs", "--tail", "all", id)
+	out = cli.DockerCmd(c, "logs", "--tail", "all", id).Combined()
 	lines = strings.Split(out, "\n")
 	c.Assert(lines, checker.HasLen, testLen+1)
 
-	out, _ = dockerCmd(c, "logs", "--tail", "-1", id)
+	out = cli.DockerCmd(c, "logs", "--tail", "-1", id).Combined()
 	lines = strings.Split(out, "\n")
 	c.Assert(lines, checker.HasLen, testLen+1)
 
-	out, _, _ = dockerCmdWithStdoutStderr(c, "logs", "--tail", "random", id)
+	out = cli.DockerCmd(c, "logs", "--tail", "random", id).Combined()
 	lines = strings.Split(out, "\n")
 	c.Assert(lines, checker.HasLen, testLen+1)
 }
 
 func (s *DockerSuite) TestLogsFollowStopped(c *check.C) {
 	dockerCmd(c, "run", "--name=test", "busybox", "echo", "hello")
-	id, err := getIDByName("test")
-	c.Assert(err, check.IsNil)
+	id := getIDByName(c, "test")
 
 	logsCmd := exec.Command(dockerBinary, "logs", "-f", id)
 	c.Assert(logsCmd.Start(), checker.IsNil)

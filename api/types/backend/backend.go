@@ -18,7 +18,7 @@ type ContainerAttachConfig struct {
 	Stream     bool
 	DetachKeys string
 
-	// Used to signify that streams are multiplexed and therefore need a StdWriter to encode stdout/sderr messages accordingly.
+	// Used to signify that streams are multiplexed and therefore need a StdWriter to encode stdout/stderr messages accordingly.
 	// TODO @cpuguy83: This shouldn't be needed. It was only added so that http and websocket endpoints can use the same function, and the websocket function was not using a stdwriter prior to this change...
 	// HOWEVER, the websocket endpoint is using a single stream and SHOULD be encoded with stdout/stderr as is done for HTTP since it is still just a single stream.
 	// Since such a change is an API change unrelated to the current changeset we'll keep it as is here and change separately.
@@ -30,6 +30,16 @@ type ContainerAttachConfig struct {
 type ContainerLogsConfig struct {
 	types.ContainerLogsOptions
 	OutStream io.Writer
+}
+
+// LogSelector is a list of services and tasks that should be returned as part
+// of a log stream. It is similar to swarmapi.LogSelector, with the difference
+// that the names don't have to be resolved to IDs; this is mostly to avoid
+// accidents later where a swarmapi LogSelector might have been incorrectly
+// used verbatim (and to avoid the handler having to import swarmapi types)
+type LogSelector struct {
+	Services []string
+	Tasks    []string
 }
 
 // ContainerStatsConfig holds information for configuring the runtime

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/integration-cli/checker"
+	"github.com/docker/docker/integration-cli/cli"
 	"github.com/docker/docker/integration-cli/daemon"
 	"github.com/docker/docker/pkg/mount"
 	"github.com/docker/docker/pkg/stringid"
@@ -47,21 +48,20 @@ func (s *DockerDaemonSuite) TestLegacyDaemonCommand(c *check.C) {
 func (s *DockerDaemonSuite) TestDaemonRestartWithRunningContainersPorts(c *check.C) {
 	s.d.StartWithBusybox(c)
 
-	if out, err := s.d.Cmd("run", "-d", "--name", "top1", "-p", "1234:80", "--restart", "always", "busybox:latest", "top"); err != nil {
-		c.Fatalf("Could not run top1: err=%v\n%s", err, out)
-	}
-	// --restart=no by default
-	if out, err := s.d.Cmd("run", "-d", "--name", "top2", "-p", "80", "busybox:latest", "top"); err != nil {
-		c.Fatalf("Could not run top2: err=%v\n%s", err, out)
-	}
+	cli.Docker(
+		cli.Args("run", "-d", "--name", "top1", "-p", "1234:80", "--restart", "always", "busybox:latest", "top"),
+		cli.Daemon(s.d),
+	).Assert(c, icmd.Success)
+
+	cli.Docker(
+		cli.Args("run", "-d", "--name", "top2", "-p", "80", "busybox:latest", "top"),
+		cli.Daemon(s.d),
+	).Assert(c, icmd.Success)
 
 	testRun := func(m map[string]bool, prefix string) {
 		var format string
 		for cont, shouldRun := range m {
-			out, err := s.d.Cmd("ps")
-			if err != nil {
-				c.Fatalf("Could not run ps: err=%v\n%q", err, out)
-			}
+			out := cli.Docker(cli.Args("ps"), cli.Daemon(s.d)).Assert(c, icmd.Success).Combined()
 			if shouldRun {
 				format = "%scontainer %q is not running"
 			} else {
@@ -198,7 +198,12 @@ func (s *DockerDaemonSuite) TestDaemonRestartWithInvalidBasesize(c *check.C) {
 
 	if newBasesizeBytes < oldBasesizeBytes {
 		err := s.d.RestartWithError("--storage-opt", fmt.Sprintf("dm.basesize=%d", newBasesizeBytes))
-		c.Assert(err, check.IsNil, check.Commentf("daemon should not have started as new base device size is less than existing base device size: %v", err))
+		c.Assert(err, check.NotNil, check.Commentf("daemon should not have started as new base device size is less than existing base device size: %v", err))
+		// 'err != nil' is expected behaviour, no new daemon started,
+		// so no need to stop daemon.
+		if err != nil {
+			return
+		}
 	}
 	s.d.Stop(c)
 }
@@ -1134,6 +1139,19 @@ func (s *DockerDaemonSuite) TestDaemonLoggingDriverNoneLogsError(c *check.C) {
 	c.Assert(out, checker.Contains, expected)
 }
 
+func (s *DockerDaemonSuite) TestDaemonLoggingDriverShouldBeIgnoredForBuild(c *check.C) {
+	s.d.StartWithBusybox(c, "--log-driver=splunk")
+
+	out, err := s.d.Cmd("build")
+	out, code, err := s.d.BuildImageWithOut("busyboxs", `
+        FROM busybox
+        RUN echo foo`, false)
+	comment := check.Commentf("Failed to build image. output %s, exitCode %d, err %v", out, code, err)
+	c.Assert(err, check.IsNil, comment)
+	c.Assert(code, check.Equals, 0, comment)
+	c.Assert(out, checker.Contains, "foo", comment)
+}
+
 func (s *DockerDaemonSuite) TestDaemonUnixSockCleanedUp(c *check.C) {
 	dir, err := ioutil.TempDir("", "socket-cleanup-test")
 	if err != nil {
@@ -1398,7 +1416,7 @@ func (s *DockerDaemonSuite) TestDaemonRestartWithSocketAsVolume(c *check.C) {
 // A subsequent daemon restart shoud clean up said mounts.
 func (s *DockerDaemonSuite) TestCleanupMountsAfterDaemonAndContainerKill(c *check.C) {
 	d := daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
-		Experimental: experimentalDaemon,
+		Experimental: testEnv.ExperimentalDaemon(),
 	})
 	d.StartWithBusybox(c)
 
@@ -1431,7 +1449,7 @@ func (s *DockerDaemonSuite) TestCleanupMountsAfterDaemonAndContainerKill(c *chec
 // os.Interrupt should perform a graceful daemon shutdown and hence cleanup mounts.
 func (s *DockerDaemonSuite) TestCleanupMountsAfterGracefulShutdown(c *check.C) {
 	d := daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
-		Experimental: experimentalDaemon,
+		Experimental: testEnv.ExperimentalDaemon(),
 	})
 	d.StartWithBusybox(c)
 
@@ -1652,7 +1670,7 @@ func (s *DockerDaemonSuite) TestDaemonRestartLocalVolumes(c *check.C) {
 // FIXME(vdemeester) should be a unit test
 func (s *DockerDaemonSuite) TestDaemonCorruptedLogDriverAddress(c *check.C) {
 	d := daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
-		Experimental: experimentalDaemon,
+		Experimental: testEnv.ExperimentalDaemon(),
 	})
 	c.Assert(d.StartWithError("--log-driver=syslog", "--log-opt", "syslog-address=corrupted:42"), check.NotNil)
 	expected := "Failed to set log opts: syslog-address should be in form proto://address"
@@ -1662,7 +1680,7 @@ func (s *DockerDaemonSuite) TestDaemonCorruptedLogDriverAddress(c *check.C) {
 // FIXME(vdemeester) should be a unit test
 func (s *DockerDaemonSuite) TestDaemonCorruptedFluentdAddress(c *check.C) {
 	d := daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
-		Experimental: experimentalDaemon,
+		Experimental: testEnv.ExperimentalDaemon(),
 	})
 	c.Assert(d.StartWithError("--log-driver=fluentd", "--log-opt", "fluentd-address=corrupted:c"), check.NotNil)
 	expected := "Failed to set log opts: invalid fluentd-address corrupted:c: "
@@ -1760,7 +1778,7 @@ func (s *DockerDaemonSuite) TestDaemonNoSpaceLeftOnDeviceError(c *check.C) {
 	dockerCmd(c, "run", "--privileged", "--rm", "-v", testDir+":/test:shared", "busybox", "sh", "-c", fmt.Sprintf("mkdir -p /test/test-mount && mount -t ext4 -no loop,rw %v /test/test-mount", loopname))
 	defer mount.Unmount(filepath.Join(testDir, "test-mount"))
 
-	s.d.Start(c, "--graph", filepath.Join(testDir, "test-mount"))
+	s.d.Start(c, "--data-root", filepath.Join(testDir, "test-mount"))
 	defer s.d.Stop(c)
 
 	// pull a repository large enough to fill the mount point
@@ -1951,11 +1969,11 @@ func (s *DockerDaemonSuite) TestDaemonRestartWithKilledRunningContainer(t *check
 
 	// Give time to containerd to process the command if we don't
 	// the exit event might be received after we do the inspect
-	pidCmd := exec.Command("kill", "-0", pid)
-	_, ec, _ := runCommandWithOutput(pidCmd)
-	for ec == 0 {
+	result := icmd.RunCommand("kill", "-0", pid)
+	for result.ExitCode == 0 {
 		time.Sleep(1 * time.Second)
-		_, ec, _ = runCommandWithOutput(pidCmd)
+		// FIXME(vdemeester) should we check it doesn't error out ?
+		result = icmd.RunCommand("kill", "-0", pid)
 	}
 
 	// restart the daemon
@@ -2347,35 +2365,17 @@ func (s *DockerDaemonSuite) TestBuildOnDisabledBridgeNetworkDaemon(c *check.C) {
 }
 
 // Test case for #21976
-func (s *DockerDaemonSuite) TestDaemonDNSInHostMode(c *check.C) {
+func (s *DockerDaemonSuite) TestDaemonDNSFlagsInHostMode(c *check.C) {
 	testRequires(c, SameHostDaemon, DaemonIsLinux)
 
-	s.d.StartWithBusybox(c, "--dns", "1.2.3.4")
+	s.d.StartWithBusybox(c, "--dns", "1.2.3.4", "--dns-search", "example.com", "--dns-opt", "timeout:3")
 
 	expectedOutput := "nameserver 1.2.3.4"
 	out, _ := s.d.Cmd("run", "--net=host", "busybox", "cat", "/etc/resolv.conf")
 	c.Assert(out, checker.Contains, expectedOutput, check.Commentf("Expected '%s', but got %q", expectedOutput, out))
-}
-
-// Test case for #21976
-func (s *DockerDaemonSuite) TestDaemonDNSSearchInHostMode(c *check.C) {
-	testRequires(c, SameHostDaemon, DaemonIsLinux)
-
-	s.d.StartWithBusybox(c, "--dns-search", "example.com")
-
-	expectedOutput := "search example.com"
-	out, _ := s.d.Cmd("run", "--net=host", "busybox", "cat", "/etc/resolv.conf")
+	expectedOutput = "search example.com"
 	c.Assert(out, checker.Contains, expectedOutput, check.Commentf("Expected '%s', but got %q", expectedOutput, out))
-}
-
-// Test case for #21976
-func (s *DockerDaemonSuite) TestDaemonDNSOptionsInHostMode(c *check.C) {
-	testRequires(c, SameHostDaemon, DaemonIsLinux)
-
-	s.d.StartWithBusybox(c, "--dns-opt", "timeout:3")
-
-	expectedOutput := "options timeout:3"
-	out, _ := s.d.Cmd("run", "--net=host", "busybox", "cat", "/etc/resolv.conf")
+	expectedOutput = "options timeout:3"
 	c.Assert(out, checker.Contains, expectedOutput, check.Commentf("Expected '%s', but got %q", expectedOutput, out))
 }
 
@@ -2584,7 +2584,14 @@ func (s *DockerDaemonSuite) TestDaemonRestartSaveContainerExitCode(c *check.C) {
 
 	containerName := "error-values"
 	// Make a container with both a non 0 exit code and an error message
-	out, err := s.d.Cmd("run", "--name", containerName, "busybox", "toto")
+	// We explicitly disable `--init` for this test, because `--init` is enabled by default
+	// on "experimental". Enabling `--init` results in a different behavior; because the "init"
+	// process itself is PID1, the container does not fail on _startup_ (i.e., `docker-init` starting),
+	// but directly after. The exit code of the container is still 127, but the Error Message is not
+	// captured, so `.State.Error` is empty.
+	// See the discussion on https://github.com/docker/docker/pull/30227#issuecomment-274161426,
+	// and https://github.com/docker/docker/pull/26061#r78054578 for more information.
+	out, err := s.d.Cmd("run", "--name", containerName, "--init=false", "busybox", "toto")
 	c.Assert(err, checker.NotNil)
 
 	// Check that those values were saved on disk
@@ -2593,9 +2600,10 @@ func (s *DockerDaemonSuite) TestDaemonRestartSaveContainerExitCode(c *check.C) {
 	c.Assert(err, checker.IsNil)
 	c.Assert(out, checker.Equals, "127")
 
-	out, err = s.d.Cmd("inspect", "-f", "{{.State.Error}}", containerName)
-	out = strings.TrimSpace(out)
+	errMsg1, err := s.d.Cmd("inspect", "-f", "{{.State.Error}}", containerName)
+	errMsg1 = strings.TrimSpace(errMsg1)
 	c.Assert(err, checker.IsNil)
+	c.Assert(errMsg1, checker.Contains, "executable file not found")
 
 	// now restart daemon
 	s.d.Restart(c)
@@ -2609,6 +2617,7 @@ func (s *DockerDaemonSuite) TestDaemonRestartSaveContainerExitCode(c *check.C) {
 	out, err = s.d.Cmd("inspect", "-f", "{{.State.Error}}", containerName)
 	out = strings.TrimSpace(out)
 	c.Assert(err, checker.IsNil)
+	c.Assert(out, checker.Equals, errMsg1)
 }
 
 func (s *DockerDaemonSuite) TestDaemonBackcompatPre17Volumes(c *check.C) {
@@ -2887,4 +2896,61 @@ func (s *DockerDaemonSuite) TestRestartPolicyWithLiveRestore(c *check.C) {
 
 	out, err = s.d.Cmd("stop", id)
 	c.Assert(err, check.IsNil, check.Commentf("output: %s", out))
+}
+
+func (s *DockerDaemonSuite) TestShmSize(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+
+	size := 67108864 * 2
+	pattern := regexp.MustCompile(fmt.Sprintf("shm on /dev/shm type tmpfs(.*)size=%dk", size/1024))
+
+	s.d.StartWithBusybox(c, "--default-shm-size", fmt.Sprintf("%v", size))
+
+	name := "shm1"
+	out, err := s.d.Cmd("run", "--name", name, "busybox", "mount")
+	c.Assert(err, check.IsNil, check.Commentf("Output: %s", out))
+	c.Assert(pattern.MatchString(out), checker.True)
+	out, err = s.d.Cmd("inspect", "--format", "{{.HostConfig.ShmSize}}", name)
+	c.Assert(err, check.IsNil, check.Commentf("Output: %s", out))
+	c.Assert(strings.TrimSpace(out), check.Equals, fmt.Sprintf("%v", size))
+}
+
+func (s *DockerDaemonSuite) TestShmSizeReload(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+
+	configPath, err := ioutil.TempDir("", "test-daemon-shm-size-reload-config")
+	c.Assert(err, checker.IsNil, check.Commentf("could not create temp file for config reload"))
+	defer os.RemoveAll(configPath) // clean up
+	configFile := filepath.Join(configPath, "config.json")
+
+	size := 67108864 * 2
+	configData := []byte(fmt.Sprintf(`{"default-shm-size": "%dM"}`, size/1024/1024))
+	c.Assert(ioutil.WriteFile(configFile, configData, 0666), checker.IsNil, check.Commentf("could not write temp file for config reload"))
+	pattern := regexp.MustCompile(fmt.Sprintf("shm on /dev/shm type tmpfs(.*)size=%dk", size/1024))
+
+	s.d.StartWithBusybox(c, "--config-file", configFile)
+
+	name := "shm1"
+	out, err := s.d.Cmd("run", "--name", name, "busybox", "mount")
+	c.Assert(err, check.IsNil, check.Commentf("Output: %s", out))
+	c.Assert(pattern.MatchString(out), checker.True)
+	out, err = s.d.Cmd("inspect", "--format", "{{.HostConfig.ShmSize}}", name)
+	c.Assert(err, check.IsNil, check.Commentf("Output: %s", out))
+	c.Assert(strings.TrimSpace(out), check.Equals, fmt.Sprintf("%v", size))
+
+	size = 67108864 * 3
+	configData = []byte(fmt.Sprintf(`{"default-shm-size": "%dM"}`, size/1024/1024))
+	c.Assert(ioutil.WriteFile(configFile, configData, 0666), checker.IsNil, check.Commentf("could not write temp file for config reload"))
+	pattern = regexp.MustCompile(fmt.Sprintf("shm on /dev/shm type tmpfs(.*)size=%dk", size/1024))
+
+	err = s.d.ReloadConfig()
+	c.Assert(err, checker.IsNil, check.Commentf("error reloading daemon config"))
+
+	name = "shm2"
+	out, err = s.d.Cmd("run", "--name", name, "busybox", "mount")
+	c.Assert(err, check.IsNil, check.Commentf("Output: %s", out))
+	c.Assert(pattern.MatchString(out), checker.True)
+	out, err = s.d.Cmd("inspect", "--format", "{{.HostConfig.ShmSize}}", name)
+	c.Assert(err, check.IsNil, check.Commentf("Output: %s", out))
+	c.Assert(strings.TrimSpace(out), check.Equals, fmt.Sprintf("%v", size))
 }

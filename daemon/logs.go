@@ -29,6 +29,10 @@ func (daemon *Daemon) ContainerLogs(ctx context.Context, containerName string, c
 		return err
 	}
 
+	if container.RemovalInProgress || container.Dead {
+		return errors.New("can not get logs from container which is dead or marked for removal")
+	}
+
 	if container.HostConfig.LogConfig.Type == "none" {
 		return logger.ErrReadLogsNotSupported
 	}
@@ -64,6 +68,18 @@ func (daemon *Daemon) ContainerLogs(ctx context.Context, containerName string, c
 		Follow: follow,
 	}
 	logs := logReader.ReadLogs(readConfig)
+	// Close logWatcher on exit
+	defer func() {
+		logs.Close()
+		if cLog != container.LogDriver {
+			// Since the logger isn't cached in the container, which
+			// occurs if it is running, it must get explicitly closed
+			// here to avoid leaking it and any file handles it has.
+			if err := cLog.Close(); err != nil {
+				logrus.Errorf("Error closing logger: %v", err)
+			}
+		}
+	}()
 
 	wf := ioutils.NewWriteFlusher(config.OutStream)
 	defer wf.Close()
@@ -84,19 +100,11 @@ func (daemon *Daemon) ContainerLogs(ctx context.Context, containerName string, c
 			logrus.Errorf("Error streaming logs: %v", err)
 			return nil
 		case <-ctx.Done():
-			logs.Close()
+			logrus.Debugf("logs: end stream, ctx is done: %v", ctx.Err())
 			return nil
 		case msg, ok := <-logs.Msg:
 			if !ok {
 				logrus.Debug("logs: end stream")
-				logs.Close()
-				if cLog != container.LogDriver {
-					// Since the logger isn't cached in the container, which occurs if it is running, it
-					// must get explicitly closed here to avoid leaking it and any file handles it has.
-					if err := cLog.Close(); err != nil {
-						logrus.Errorf("Error closing logger: %v", err)
-					}
-				}
 				return nil
 			}
 			logLine := msg.Line

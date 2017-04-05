@@ -7,34 +7,28 @@ import (
 	"time"
 
 	"github.com/docker/docker/integration-cli/checker"
+	"github.com/docker/docker/integration-cli/cli"
 	"github.com/docker/docker/pkg/parsers/kernel"
 	icmd "github.com/docker/docker/pkg/testutil/cmd"
 	"github.com/go-check/check"
 )
 
+// ensure Kernel version is >= v3.9 for macvlan support
 func macvlanKernelSupport() bool {
-	const macvlanKernelVer = 3 // minimum macvlan kernel support
-	const macvlanMajorVer = 9  // minimum macvlan major kernel support
-	kv, err := kernel.GetKernelVersion()
-	if err != nil {
-		return false
-	}
-	// ensure Kernel version is >= v3.9 for macvlan support
-	if kv.Kernel < macvlanKernelVer || (kv.Kernel == macvlanKernelVer && kv.Major < macvlanMajorVer) {
-		return false
-	}
-	return true
+	return checkKernelMajorVersionGreaterOrEqualThen(3, 9)
 }
 
+// ensure Kernel version is >= v4.2 for ipvlan support
 func ipvlanKernelSupport() bool {
-	const ipvlanKernelVer = 4 // minimum ipvlan kernel support
-	const ipvlanMajorVer = 2  // minimum ipvlan major kernel support
+	return checkKernelMajorVersionGreaterOrEqualThen(4, 2)
+}
+
+func checkKernelMajorVersionGreaterOrEqualThen(kernelVersion int, majorVersion int) bool {
 	kv, err := kernel.GetKernelVersion()
 	if err != nil {
 		return false
 	}
-	// ensure Kernel version is >= v4.2 for ipvlan support
-	if kv.Kernel < ipvlanKernelVer || (kv.Kernel == ipvlanKernelVer && kv.Major < ipvlanMajorVer) {
+	if kv.Kernel < kernelVersion || (kv.Kernel == kernelVersion && kv.Major < majorVersion) {
 		return false
 	}
 	return true
@@ -375,24 +369,23 @@ func (s *DockerSuite) TestDockerNetworkMacVlanBridgeNilParent(c *check.C) {
 func (s *DockerSuite) TestDockerNetworkMacVlanBridgeInternalMode(c *check.C) {
 	// macvlan bridge mode --internal containers can communicate inside the network but not externally
 	testRequires(c, DaemonIsLinux, macvlanKernelSupport, NotUserNamespace, NotArm, ExperimentalDaemon)
-	dockerCmd(c, "network", "create", "--driver=macvlan", "--internal", "dm-internal")
+	cli.DockerCmd(c, "network", "create", "--driver=macvlan", "--internal", "dm-internal")
 	assertNwIsAvailable(c, "dm-internal")
 	nr := getNetworkResource(c, "dm-internal")
 	c.Assert(nr.Internal, checker.True)
 
 	// start two containers on the same subnet
-	dockerCmd(c, "run", "-d", "--net=dm-internal", "--name=first", "busybox", "top")
+	cli.DockerCmd(c, "run", "-d", "--net=dm-internal", "--name=first", "busybox", "top")
 	c.Assert(waitRun("first"), check.IsNil)
-	dockerCmd(c, "run", "-d", "--net=dm-internal", "--name=second", "busybox", "top")
+	cli.DockerCmd(c, "run", "-d", "--net=dm-internal", "--name=second", "busybox", "top")
 	c.Assert(waitRun("second"), check.IsNil)
 
 	// access outside of the network should fail
-	result := dockerCmdWithTimeout(time.Second, "exec", "first", "ping", "-c", "1", "-w", "1", "8.8.8.8")
+	result := cli.Docker(cli.Args("exec", "first", "ping", "-c", "1", "-w", "1", "8.8.8.8"), cli.WithTimeout(time.Second))
 	c.Assert(result, icmd.Matches, icmd.Expected{Timeout: true})
 
 	// intra-network communications should succeed
-	_, _, err := dockerCmdWithError("exec", "second", "ping", "-c", "1", "first")
-	c.Assert(err, check.IsNil)
+	cli.DockerCmd(c, "exec", "second", "ping", "-c", "1", "first")
 }
 
 func (s *DockerSuite) TestDockerNetworkIpvlanL2NilParent(c *check.C) {
@@ -415,23 +408,22 @@ func (s *DockerSuite) TestDockerNetworkIpvlanL2NilParent(c *check.C) {
 func (s *DockerSuite) TestDockerNetworkIpvlanL2InternalMode(c *check.C) {
 	// ipvlan l2 mode --internal containers can communicate inside the network but not externally
 	testRequires(c, DaemonIsLinux, ipvlanKernelSupport, NotUserNamespace, NotArm, ExperimentalDaemon)
-	dockerCmd(c, "network", "create", "--driver=ipvlan", "--internal", "di-internal")
+	cli.DockerCmd(c, "network", "create", "--driver=ipvlan", "--internal", "di-internal")
 	assertNwIsAvailable(c, "di-internal")
 	nr := getNetworkResource(c, "di-internal")
 	c.Assert(nr.Internal, checker.True)
 
 	// start two containers on the same subnet
-	dockerCmd(c, "run", "-d", "--net=di-internal", "--name=first", "busybox", "top")
+	cli.DockerCmd(c, "run", "-d", "--net=di-internal", "--name=first", "busybox", "top")
 	c.Assert(waitRun("first"), check.IsNil)
-	dockerCmd(c, "run", "-d", "--net=di-internal", "--name=second", "busybox", "top")
+	cli.DockerCmd(c, "run", "-d", "--net=di-internal", "--name=second", "busybox", "top")
 	c.Assert(waitRun("second"), check.IsNil)
 
 	// access outside of the network should fail
-	result := dockerCmdWithTimeout(time.Second, "exec", "first", "ping", "-c", "1", "-w", "1", "8.8.8.8")
+	result := cli.Docker(cli.Args("exec", "first", "ping", "-c", "1", "-w", "1", "8.8.8.8"), cli.WithTimeout(time.Second))
 	c.Assert(result, icmd.Matches, icmd.Expected{Timeout: true})
 	// intra-network communications should succeed
-	_, _, err := dockerCmdWithError("exec", "second", "ping", "-c", "1", "first")
-	c.Assert(err, check.IsNil)
+	cli.DockerCmd(c, "exec", "second", "ping", "-c", "1", "first")
 }
 
 func (s *DockerSuite) TestDockerNetworkIpvlanL3NilParent(c *check.C) {
@@ -455,24 +447,23 @@ func (s *DockerSuite) TestDockerNetworkIpvlanL3NilParent(c *check.C) {
 func (s *DockerSuite) TestDockerNetworkIpvlanL3InternalMode(c *check.C) {
 	// ipvlan l3 mode --internal containers can communicate inside the network but not externally
 	testRequires(c, DaemonIsLinux, ipvlanKernelSupport, NotUserNamespace, NotArm, ExperimentalDaemon)
-	dockerCmd(c, "network", "create", "--driver=ipvlan", "--subnet=172.28.230.0/24",
+	cli.DockerCmd(c, "network", "create", "--driver=ipvlan", "--subnet=172.28.230.0/24",
 		"--subnet=172.28.220.0/24", "-o", "ipvlan_mode=l3", "--internal", "di-internal-l3")
 	assertNwIsAvailable(c, "di-internal-l3")
 	nr := getNetworkResource(c, "di-internal-l3")
 	c.Assert(nr.Internal, checker.True)
 
 	// start two containers on separate subnets
-	dockerCmd(c, "run", "-d", "--ip=172.28.220.10", "--net=di-internal-l3", "--name=first", "busybox", "top")
+	cli.DockerCmd(c, "run", "-d", "--ip=172.28.220.10", "--net=di-internal-l3", "--name=first", "busybox", "top")
 	c.Assert(waitRun("first"), check.IsNil)
-	dockerCmd(c, "run", "-d", "--ip=172.28.230.10", "--net=di-internal-l3", "--name=second", "busybox", "top")
+	cli.DockerCmd(c, "run", "-d", "--ip=172.28.230.10", "--net=di-internal-l3", "--name=second", "busybox", "top")
 	c.Assert(waitRun("second"), check.IsNil)
 
 	// access outside of the network should fail
-	result := dockerCmdWithTimeout(time.Second, "exec", "first", "ping", "-c", "1", "-w", "1", "8.8.8.8")
+	result := cli.Docker(cli.Args("exec", "first", "ping", "-c", "1", "-w", "1", "8.8.8.8"), cli.WithTimeout(time.Second))
 	c.Assert(result, icmd.Matches, icmd.Expected{Timeout: true})
 	// intra-network communications should succeed
-	_, _, err := dockerCmdWithError("exec", "second", "ping", "-c", "1", "first")
-	c.Assert(err, check.IsNil)
+	cli.DockerCmd(c, "exec", "second", "ping", "-c", "1", "first")
 }
 
 func (s *DockerSuite) TestDockerNetworkMacVlanExistingParent(c *check.C) {

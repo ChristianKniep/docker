@@ -27,6 +27,7 @@ import (
 	"github.com/docker/docker/daemon/discovery"
 	"github.com/docker/docker/daemon/events"
 	"github.com/docker/docker/daemon/exec"
+	"github.com/docker/docker/daemon/logger"
 	// register graph drivers
 	_ "github.com/docker/docker/daemon/graphdriver/register"
 	"github.com/docker/docker/daemon/initlayer"
@@ -64,9 +65,6 @@ var (
 	// DefaultRuntimeBinary is the default runtime to be used by
 	// containerd if none is specified
 	DefaultRuntimeBinary = "docker-runc"
-
-	// DefaultInitBinary is the name of the default init binary
-	DefaultInitBinary = "docker-init"
 
 	errSystemNotSupported = errors.New("The Docker daemon is not supported on this platform.")
 )
@@ -113,6 +111,9 @@ type Daemon struct {
 
 	seccompProfile     []byte
 	seccompProfilePath string
+
+	diskUsageRunning int32
+	pruneRunning     int32
 }
 
 // HasExperimental returns whether the experimental features of the daemon are enabled or not
@@ -197,6 +198,7 @@ func (daemon *Daemon) restore() error {
 			if err := backportMountSpec(c); err != nil {
 				logrus.Error("Failed to migrate old mounts to use new spec format")
 			}
+			daemon.setStateCounter(c)
 
 			if c.IsRunning() || c.IsPaused() {
 				c.RestartManager().Cancel() // manually start containers because some need to wait for swarm networking
@@ -445,7 +447,25 @@ func (daemon *Daemon) DaemonLeavesCluster() {
 	// Daemon is in charge of removing the attachable networks with
 	// connected containers when the node leaves the swarm
 	daemon.clearAttachableNetworks()
+	// We no longer need the cluster provider, stop it now so that
+	// the network agent will stop listening to cluster events.
 	daemon.setClusterProvider(nil)
+	// Wait for the networking cluster agent to stop
+	daemon.netController.AgentStopWait()
+	// Daemon is in charge of removing the ingress network when the
+	// node leaves the swarm. Wait for job to be done or timeout.
+	// This is called also on graceful daemon shutdown. We need to
+	// wait, because the ingress release has to happen before the
+	// network controller is stopped.
+	if done, err := daemon.ReleaseIngress(); err == nil {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			logrus.Warnf("timeout while waiting for ingress network removal")
+		}
+	} else {
+		logrus.Warnf("failed to initiate ingress network removal: %v", err)
+	}
 }
 
 // setClusterProvider sets a component for querying the current cluster state.
@@ -571,6 +591,7 @@ func NewDaemon(config *config.Config, registryService registry.Service, containe
 
 	d.RegistryService = registryService
 	d.PluginStore = pluginStore
+	logger.RegisterPluginGetter(d.PluginStore)
 
 	// Plugin system initialization should happen before restore. Do not change order.
 	d.pluginManager, err = plugin.NewManager(plugin.ManagerConfig{
@@ -832,6 +853,12 @@ func (daemon *Daemon) Shutdown() error {
 		}
 	}
 
+	// If we are part of a cluster, clean up cluster's stuff
+	if daemon.clusterProvider != nil {
+		logrus.Debugf("start clean shutdown of cluster resources...")
+		daemon.DaemonLeavesCluster()
+	}
+
 	// Shutdown plugins after containers and layerstore. Don't change the order.
 	daemon.pluginShutdown()
 
@@ -932,7 +959,7 @@ func prepareTempDir(rootDir string, rootUID, rootGID int) (string, error) {
 	if tmpDir = os.Getenv("DOCKER_TMPDIR"); tmpDir == "" {
 		tmpDir = filepath.Join(rootDir, "tmp")
 		newName := tmpDir + "-old"
-		if err := os.Rename(tmpDir, newName); err != nil {
+		if err := os.Rename(tmpDir, newName); err == nil {
 			go func() {
 				if err := os.RemoveAll(newName); err != nil {
 					logrus.Warnf("failed to delete old tmp directory: %s", newName)

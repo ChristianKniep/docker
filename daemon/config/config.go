@@ -9,7 +9,6 @@ import (
 	"io/ioutil"
 	"reflect"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 
@@ -41,6 +40,8 @@ const (
 	DefaultNetworkMtu = 1500
 	// DisableNetworkBridge is the default value of the option to disable network bridge
 	DisableNetworkBridge = "none"
+	// DefaultInitBinary is the name of the default init binary
+	DefaultInitBinary = "docker-init"
 )
 
 // flatOptions contains configuration keys
@@ -499,19 +500,6 @@ func Validate(config *Config) error {
 	}
 
 	return nil
-}
-
-// GetAuthorizationPlugins returns daemon's sorted authorization plugins
-func (conf *Config) GetAuthorizationPlugins() []string {
-	conf.Lock()
-	defer conf.Unlock()
-
-	authPlugins := make([]string, 0, len(conf.AuthorizationPlugins))
-	for _, p := range conf.AuthorizationPlugins {
-		authPlugins = append(authPlugins, p)
-	}
-	sort.Strings(authPlugins)
-	return authPlugins
 }
 
 // ModifiedDiscoverySettings returns whether the discovery configuration has been modified or not.

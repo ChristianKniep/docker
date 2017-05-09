@@ -33,6 +33,7 @@ const (
 	indexMembership   = "membership"
 	indexNetwork      = "network"
 	indexSecret       = "secret"
+	indexConfig       = "config"
 	indexKind         = "kind"
 	indexCustom       = "custom"
 
@@ -347,9 +348,6 @@ type Batch struct {
 	store *MemoryStore
 	// applied counts the times Update has run successfully
 	applied int
-	// committed is the number of times Update had run successfully as of
-	// the time pending changes were committed.
-	committed int
 	// transactionSizeEstimate is the running count of the size of the
 	// current transaction.
 	transactionSizeEstimate int
@@ -433,8 +431,6 @@ func (batch *Batch) commit() error {
 		return batch.err
 	}
 
-	batch.committed = batch.applied
-
 	for _, c := range batch.tx.changelist {
 		batch.store.queue.Publish(c)
 	}
@@ -460,9 +456,9 @@ func (batch *Batch) commit() error {
 // excessive time, or producing a transaction that exceeds the maximum
 // size.
 //
-// Batch returns the number of calls to batch.Update whose changes were
-// successfully committed to the store.
-func (s *MemoryStore) Batch(cb func(*Batch) error) (int, error) {
+// If Batch returns an error, no guarantees are made about how many updates
+// were committed successfully.
+func (s *MemoryStore) Batch(cb func(*Batch) error) error {
 	s.updateLock.Lock()
 
 	batch := Batch{
@@ -473,12 +469,12 @@ func (s *MemoryStore) Batch(cb func(*Batch) error) (int, error) {
 	if err := cb(&batch); err != nil {
 		batch.tx.memDBTx.Abort()
 		s.updateLock.Unlock()
-		return batch.committed, err
+		return err
 	}
 
 	err := batch.commit()
 	s.updateLock.Unlock()
-	return batch.committed, err
+	return err
 }
 
 func (tx *tx) init(memDBTx *memdb.Txn, curVersion *api.Version) {
@@ -692,6 +688,12 @@ func (tx readTx) findIterators(table string, by By, checkType func(By) error) ([
 		return []memdb.ResultIterator{it}, nil
 	case byReferencedSecretID:
 		it, err := tx.memDBTx.Get(table, indexSecret, string(v))
+		if err != nil {
+			return nil, err
+		}
+		return []memdb.ResultIterator{it}, nil
+	case byReferencedConfigID:
+		it, err := tx.memDBTx.Get(table, indexConfig, string(v))
 		if err != nil {
 			return nil, err
 		}

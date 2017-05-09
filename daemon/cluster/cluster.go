@@ -270,27 +270,39 @@ func (c *Cluster) GetAdvertiseAddress() string {
 	return c.currentNodeState().actualLocalAddr
 }
 
-// GetRemoteAddress returns a known advertise address of a remote manager if
-// available.
-// todo: change to array/connect with info
-func (c *Cluster) GetRemoteAddress() string {
+// GetDataPathAddress returns the address to be used for the data path traffic, if specified.
+func (c *Cluster) GetDataPathAddress() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.getRemoteAddress()
-}
-
-func (c *Cluster) getRemoteAddress() string {
-	state := c.currentNodeState()
-	if state.swarmNode == nil {
-		return ""
-	}
-	nodeID := state.swarmNode.NodeID()
-	for _, r := range state.swarmNode.Remotes() {
-		if r.NodeID != nodeID {
-			return r.Addr
-		}
+	if c.nr != nil {
+		return c.nr.config.DataPathAddr
 	}
 	return ""
+}
+
+// GetRemoteAddressList returns the advertise address for each of the remote managers if
+// available.
+func (c *Cluster) GetRemoteAddressList() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.getRemoteAddressList()
+}
+
+func (c *Cluster) getRemoteAddressList() []string {
+	state := c.currentNodeState()
+	if state.swarmNode == nil {
+		return []string{}
+	}
+
+	nodeID := state.swarmNode.NodeID()
+	remotes := state.swarmNode.Remotes()
+	addressList := make([]string, 0, len(remotes))
+	for _, r := range remotes {
+		if r.NodeID != nodeID {
+			addressList = append(addressList, r.Addr)
+		}
+	}
+	return addressList
 }
 
 // ListenClusterEvents returns a channel that receives messages on cluster
@@ -334,8 +346,9 @@ func (c *Cluster) Cleanup() {
 		c.mu.Unlock()
 		return
 	}
-	defer c.mu.Unlock()
 	state := c.currentNodeState()
+	c.mu.Unlock()
+
 	if state.IsActiveManager() {
 		active, reachable, unreachable, err := managerStats(state.controlClient, state.NodeID())
 		if err == nil {
@@ -345,11 +358,15 @@ func (c *Cluster) Cleanup() {
 			}
 		}
 	}
+
 	if err := node.Stop(); err != nil {
 		logrus.Errorf("failed to shut down cluster node: %v", err)
 		signal.DumpStacks("")
 	}
+
+	c.mu.Lock()
 	c.nr = nil
+	c.mu.Unlock()
 }
 
 func managerStats(client swarmapi.ControlClient, currentNodeID string) (current bool, reachable int, unreachable int, err error) {

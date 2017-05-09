@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/cloudflare/cfssl/helpers"
 	"github.com/docker/docker/pkg/plugingetter"
 	"github.com/docker/go-events"
 	"github.com/docker/swarmkit/api"
@@ -35,7 +36,7 @@ import (
 	"github.com/docker/swarmkit/manager/scheduler"
 	"github.com/docker/swarmkit/manager/state/raft"
 	"github.com/docker/swarmkit/manager/state/store"
-	"github.com/docker/swarmkit/manager/storeapi"
+	"github.com/docker/swarmkit/manager/watchapi"
 	"github.com/docker/swarmkit/remotes"
 	"github.com/docker/swarmkit/xnet"
 	gogotypes "github.com/gogo/protobuf/types"
@@ -64,6 +65,9 @@ type RemoteAddrs struct {
 // Config is used to tune the Manager.
 type Config struct {
 	SecurityConfig *ca.SecurityConfig
+
+	// RootCAPaths is the path to which new root certs should be save
+	RootCAPaths ca.CertPaths
 
 	// ExternalCAs is a list of initial CAs to which a manager node
 	// will make certificate signing requests for node certificates.
@@ -210,7 +214,7 @@ func New(config *Config) (*Manager, error) {
 
 	m := &Manager{
 		config:          *config,
-		caserver:        ca.NewServer(raftNode.MemoryStore(), config.SecurityConfig),
+		caserver:        ca.NewServer(raftNode.MemoryStore(), config.SecurityConfig, config.RootCAPaths),
 		dispatcher:      dispatcher.New(raftNode, dispatcher.DefaultConfig()),
 		logbroker:       logbroker.New(raftNode.MemoryStore()),
 		server:          grpc.NewServer(opts...),
@@ -390,13 +394,13 @@ func (m *Manager) Run(parent context.Context) error {
 	}
 
 	baseControlAPI := controlapi.NewServer(m.raftNode.MemoryStore(), m.raftNode, m.config.SecurityConfig, m.caserver, m.config.PluginGetter)
-	baseStoreAPI := storeapi.NewServer(m.raftNode.MemoryStore())
+	baseWatchAPI := watchapi.NewServer(m.raftNode.MemoryStore())
 	baseResourceAPI := resourceapi.New(m.raftNode.MemoryStore())
 	healthServer := health.NewHealthServer()
 	localHealthServer := health.NewHealthServer()
 
 	authenticatedControlAPI := api.NewAuthenticatedWrapperControlServer(baseControlAPI, authorize)
-	authenticatedStoreAPI := api.NewAuthenticatedWrapperStoreServer(baseStoreAPI, authorize)
+	authenticatedWatchAPI := api.NewAuthenticatedWrapperWatchServer(baseWatchAPI, authorize)
 	authenticatedResourceAPI := api.NewAuthenticatedWrapperResourceAllocatorServer(baseResourceAPI, authorize)
 	authenticatedLogsServerAPI := api.NewAuthenticatedWrapperLogsServer(m.logbroker, authorize)
 	authenticatedLogBrokerAPI := api.NewAuthenticatedWrapperLogBrokerServer(m.logbroker, authorize)
@@ -446,7 +450,6 @@ func (m *Manager) Run(parent context.Context) error {
 		return context.WithValue(ctx, ca.LocalRequestKey, nodeInfo), nil
 	}
 	localProxyControlAPI := api.NewRaftProxyControlServer(baseControlAPI, m.raftNode, handleRequestLocally, forwardAsOwnRequest)
-	localProxyStoreAPI := api.NewRaftProxyStoreServer(baseStoreAPI, m.raftNode, handleRequestLocally, forwardAsOwnRequest)
 	localProxyLogsAPI := api.NewRaftProxyLogsServer(m.logbroker, m.raftNode, handleRequestLocally, forwardAsOwnRequest)
 	localProxyDispatcherAPI := api.NewRaftProxyDispatcherServer(m.dispatcher, m.raftNode, handleRequestLocally, forwardAsOwnRequest)
 	localProxyCAAPI := api.NewRaftProxyCAServer(m.caserver, m.raftNode, handleRequestLocally, forwardAsOwnRequest)
@@ -462,7 +465,7 @@ func (m *Manager) Run(parent context.Context) error {
 	api.RegisterHealthServer(m.server, authenticatedHealthAPI)
 	api.RegisterRaftMembershipServer(m.server, proxyRaftMembershipAPI)
 	api.RegisterControlServer(m.server, authenticatedControlAPI)
-	api.RegisterStoreServer(m.server, authenticatedStoreAPI)
+	api.RegisterWatchServer(m.server, authenticatedWatchAPI)
 	api.RegisterLogsServer(m.server, authenticatedLogsServerAPI)
 	api.RegisterLogBrokerServer(m.server, proxyLogBrokerAPI)
 	api.RegisterResourceAllocatorServer(m.server, proxyResourceAPI)
@@ -470,7 +473,7 @@ func (m *Manager) Run(parent context.Context) error {
 	grpc_prometheus.Register(m.server)
 
 	api.RegisterControlServer(m.localserver, localProxyControlAPI)
-	api.RegisterStoreServer(m.localserver, localProxyStoreAPI)
+	api.RegisterWatchServer(m.localserver, baseWatchAPI)
 	api.RegisterLogsServer(m.localserver, localProxyLogsAPI)
 	api.RegisterHealthServer(m.localserver, localHealthServer)
 	api.RegisterDispatcherServer(m.localserver, localProxyDispatcherAPI)
@@ -773,22 +776,29 @@ func (m *Manager) rotateRootCAKEK(ctx context.Context, clusterID string) error {
 		}
 
 		if x509.IsEncryptedPEMBlock(keyBlock) {
-			// This key is already encrypted, let's try to decrypt with the current main passphrase
-			_, err = x509.DecryptPEMBlock(keyBlock, []byte(passphrase))
+			// PEM encryption does not have a digest, so sometimes decryption doesn't
+			// error even with the wrong passphrase.  So actually try to parse it into a valid key.
+			_, err := helpers.ParsePrivateKeyPEMWithPassword(privKeyPEM, []byte(passphrase))
 			if err == nil {
-				// The main key is the correct KEK, nothing to do here
+				// This key is already correctly encrypted with the correct KEK, nothing to do here
 				return nil
 			}
+
 			// This key is already encrypted, but failed with current main passphrase.
-			// Let's try to decrypt with the previous passphrase
-			unencryptedKey, err := x509.DecryptPEMBlock(keyBlock, []byte(passphrasePrev))
+			// Let's try to decrypt with the previous passphrase, and parse into a valid key, for the
+			// same reason as above.
+			_, err = helpers.ParsePrivateKeyPEMWithPassword(privKeyPEM, []byte(passphrasePrev))
 			if err != nil {
 				// We were not able to decrypt either with the main or backup passphrase, error
 				return err
 			}
+			// ok the above passphrase is correct, so decrypt the PEM block so we can re-encrypt -
+			// since the key was successfully decrypted above, there will be no error doing PEM
+			// decryption
+			unencryptedDER, _ := x509.DecryptPEMBlock(keyBlock, []byte(passphrasePrev))
 			unencryptedKeyBlock := &pem.Block{
 				Type:  keyBlock.Type,
-				Bytes: unencryptedKey,
+				Bytes: unencryptedDER,
 			}
 
 			// we were able to decrypt the key with the previous passphrase - if the current passphrase is empty,

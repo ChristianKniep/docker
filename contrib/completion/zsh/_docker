@@ -629,6 +629,7 @@ __docker_container_subcommand() {
         "($help)--log-driver=[Default driver for container logs]:logging driver:__docker_complete_log_drivers"
         "($help)*--log-opt=[Log driver specific options]:log driver options:__docker_complete_log_options"
         "($help)--mac-address=[Container MAC address]:MAC address: "
+        "($help)*--mount=[Attach a filesystem mount to the container]:mount: "
         "($help)--name=[Container name]:name: "
         "($help)--network=[Connect a container to a network]:network mode:(bridge none container host)"
         "($help)*--network-alias=[Add network-scoped alias for the container]:alias: "
@@ -1926,7 +1927,7 @@ __docker_service_commands() {
     _docker_service_subcommands=(
         "create:Create a new service"
         "inspect:Display detailed information on one or more services"
-        "logs:Fetch the logs of a service"
+        "logs:Fetch the logs of a service or task"
         "ls:List services"
         "rm:Remove one or more services"
         "scale:Scale one or multiple replicated services"
@@ -2266,6 +2267,7 @@ __docker_swarm_subcommand() {
             _arguments $(__docker_arguments) \
                 $opts_help \
                 "($help)--advertise-addr=[Advertised address]:ip\:port: " \
+                "($help)--data-path-addr=[Data path IP or interface]:ip " \
                 "($help)--autolock[Enable manager autolocking]" \
                 "($help)--availability=[Availability of the node]:availability:(active drain pause)" \
                 "($help)--cert-expiry=[Validity period for node certificates]:duration: " \
@@ -2281,6 +2283,7 @@ __docker_swarm_subcommand() {
             _arguments $(__docker_arguments) -A '-*' \
                 $opts_help \
                 "($help)--advertise-addr=[Advertised address]:ip\:port: " \
+                "($help)--data-path-addr=[Data path IP or interface]:ip " \
                 "($help)--availability=[Availability of the node]:availability:(active drain pause)" \
                 "($help)--listen-addr=[Listen address]:ip\:port: " \
                 "($help)--token=[Token for entry into the swarm]:secret: " \

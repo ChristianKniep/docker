@@ -1,18 +1,19 @@
-package daemon
+package daemon // import "github.com/docker/docker/daemon"
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"time"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/api/errors"
 	"github.com/docker/docker/api/types/backend"
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/container/stream"
 	"github.com/docker/docker/daemon/logger"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/docker/pkg/term"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 // ContainerAttach attaches to logs according to the config passed in. See ContainerAttachConfig.
@@ -22,7 +23,7 @@ func (daemon *Daemon) ContainerAttach(prefixOrName string, c *backend.ContainerA
 	if c.DetachKeys != "" {
 		keys, err = term.ToBytes(c.DetachKeys)
 		if err != nil {
-			return fmt.Errorf("Invalid detach keys (%s) provided", c.DetachKeys)
+			return errdefs.InvalidParameter(errors.Errorf("Invalid detach keys (%s) provided", c.DetachKeys))
 		}
 	}
 
@@ -31,8 +32,12 @@ func (daemon *Daemon) ContainerAttach(prefixOrName string, c *backend.ContainerA
 		return err
 	}
 	if container.IsPaused() {
-		err := fmt.Errorf("Container %s is paused. Unpause the container before attach", prefixOrName)
-		return errors.NewRequestConflictError(err)
+		err := fmt.Errorf("container %s is paused, unpause the container before attach", prefixOrName)
+		return errdefs.Conflict(err)
+	}
+	if container.IsRestarting() {
+		err := fmt.Errorf("container %s is restarting, wait until the container is running", prefixOrName)
+		return errdefs.Conflict(err)
 	}
 
 	cfg := stream.AttachConfig{
@@ -115,7 +120,7 @@ func (daemon *Daemon) containerAttach(c *container.Container, cfg *stream.Attach
 		}
 		cLog, ok := logDriver.(logger.LogReader)
 		if !ok {
-			return logger.ErrReadLogsNotSupported
+			return logger.ErrReadLogsNotSupported{}
 		}
 		logs := cLog.ReadLogs(logger.ReadConfig{Tail: -1})
 		defer logs.Close()
@@ -160,21 +165,18 @@ func (daemon *Daemon) containerAttach(c *container.Container, cfg *stream.Attach
 		cfg.Stdin = nil
 	}
 
-	waitChan := make(chan struct{})
 	if c.Config.StdinOnce && !c.Config.Tty {
+		// Wait for the container to stop before returning.
+		waitChan := c.Wait(context.Background(), container.WaitConditionNotRunning)
 		defer func() {
-			<-waitChan
-		}()
-		go func() {
-			c.WaitStop(-1 * time.Second)
-			close(waitChan)
+			<-waitChan // Ignore returned exit code.
 		}()
 	}
 
 	ctx := c.InitAttachContext()
 	err := <-c.StreamConfig.CopyStreams(ctx, cfg)
 	if err != nil {
-		if _, ok := err.(stream.DetachError); ok {
+		if _, ok := err.(term.EscapeError); ok {
 			daemon.LogContainerEvent(c, "detach")
 		} else {
 			logrus.Errorf("attach failed with error: %v", err)

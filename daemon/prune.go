@@ -1,4 +1,4 @@
-package daemon
+package daemon // import "github.com/docker/docker/daemon"
 
 import (
 	"fmt"
@@ -6,35 +6,53 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	timetypes "github.com/docker/docker/api/types/time"
-	"github.com/docker/docker/image"
-	"github.com/docker/docker/layer"
 	"github.com/docker/docker/pkg/directory"
 	"github.com/docker/docker/runconfig"
 	"github.com/docker/docker/volume"
 	"github.com/docker/libnetwork"
-	digest "github.com/opencontainers/go-digest"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 )
 
 var (
-	// ErrPruneRunning is returned when a prune request is received while
+	// errPruneRunning is returned when a prune request is received while
 	// one is in progress
-	ErrPruneRunning = fmt.Errorf("a prune operation is already running")
+	errPruneRunning = fmt.Errorf("a prune operation is already running")
+
+	containersAcceptedFilters = map[string]bool{
+		"label":  true,
+		"label!": true,
+		"until":  true,
+	}
+	volumesAcceptedFilters = map[string]bool{
+		"label":  true,
+		"label!": true,
+	}
+
+	networksAcceptedFilters = map[string]bool{
+		"label":  true,
+		"label!": true,
+		"until":  true,
+	}
 )
 
 // ContainersPrune removes unused containers
 func (daemon *Daemon) ContainersPrune(ctx context.Context, pruneFilters filters.Args) (*types.ContainersPruneReport, error) {
 	if !atomic.CompareAndSwapInt32(&daemon.pruneRunning, 0, 1) {
-		return nil, ErrPruneRunning
+		return nil, errPruneRunning
 	}
 	defer atomic.StoreInt32(&daemon.pruneRunning, 0)
 
 	rep := &types.ContainersPruneReport{}
+
+	// make sure that only accepted filters have been received
+	err := pruneFilters.Validate(containersAcceptedFilters)
+	if err != nil {
+		return nil, err
+	}
 
 	until, err := getUntilFromPruneFilters(pruneFilters)
 	if err != nil {
@@ -45,8 +63,8 @@ func (daemon *Daemon) ContainersPrune(ctx context.Context, pruneFilters filters.
 	for _, c := range allContainers {
 		select {
 		case <-ctx.Done():
-			logrus.Warnf("ContainersPrune operation cancelled: %#v", *rep)
-			return rep, ctx.Err()
+			logrus.Debugf("ContainersPrune operation cancelled: %#v", *rep)
+			return rep, nil
 		default:
 		}
 
@@ -57,7 +75,7 @@ func (daemon *Daemon) ContainersPrune(ctx context.Context, pruneFilters filters.
 			if !matchLabels(pruneFilters, c.Config.Labels) {
 				continue
 			}
-			cSize, _ := daemon.getSize(c.ID)
+			cSize, _ := daemon.imageService.GetContainerLayerSize(c.ID)
 			// TODO: sets RmLink to true?
 			err := daemon.ContainerRm(c.ID, &types.ContainerRmConfig{})
 			if err != nil {
@@ -77,16 +95,22 @@ func (daemon *Daemon) ContainersPrune(ctx context.Context, pruneFilters filters.
 // VolumesPrune removes unused local volumes
 func (daemon *Daemon) VolumesPrune(ctx context.Context, pruneFilters filters.Args) (*types.VolumesPruneReport, error) {
 	if !atomic.CompareAndSwapInt32(&daemon.pruneRunning, 0, 1) {
-		return nil, ErrPruneRunning
+		return nil, errPruneRunning
 	}
 	defer atomic.StoreInt32(&daemon.pruneRunning, 0)
+
+	// make sure that only accepted filters have been received
+	err := pruneFilters.Validate(volumesAcceptedFilters)
+	if err != nil {
+		return nil, err
+	}
 
 	rep := &types.VolumesPruneReport{}
 
 	pruneVols := func(v volume.Volume) error {
 		select {
 		case <-ctx.Done():
-			logrus.Warnf("VolumesPrune operation cancelled: %#v", *rep)
+			logrus.Debugf("VolumesPrune operation cancelled: %#v", *rep)
 			return ctx.Err()
 		default:
 		}
@@ -101,11 +125,11 @@ func (daemon *Daemon) VolumesPrune(ctx context.Context, pruneFilters filters.Arg
 					return nil
 				}
 			}
-			vSize, err := directory.Size(v.Path())
+			vSize, err := directory.Size(ctx, v.Path())
 			if err != nil {
 				logrus.Warnf("could not determine size of volume %s: %v", name, err)
 			}
-			err = daemon.volumes.Remove(v)
+			err = daemon.volumeRm(v)
 			if err != nil {
 				logrus.Warnf("could not remove volume %s: %v", name, err)
 				return nil
@@ -117,150 +141,12 @@ func (daemon *Daemon) VolumesPrune(ctx context.Context, pruneFilters filters.Arg
 		return nil
 	}
 
-	err := daemon.traverseLocalVolumes(pruneVols)
+	err = daemon.traverseLocalVolumes(pruneVols)
+	if err == context.Canceled {
+		return rep, nil
+	}
 
 	return rep, err
-}
-
-// ImagesPrune removes unused images
-func (daemon *Daemon) ImagesPrune(ctx context.Context, pruneFilters filters.Args) (*types.ImagesPruneReport, error) {
-	if !atomic.CompareAndSwapInt32(&daemon.pruneRunning, 0, 1) {
-		return nil, ErrPruneRunning
-	}
-	defer atomic.StoreInt32(&daemon.pruneRunning, 0)
-
-	rep := &types.ImagesPruneReport{}
-
-	danglingOnly := true
-	if pruneFilters.Include("dangling") {
-		if pruneFilters.ExactMatch("dangling", "false") || pruneFilters.ExactMatch("dangling", "0") {
-			danglingOnly = false
-		} else if !pruneFilters.ExactMatch("dangling", "true") && !pruneFilters.ExactMatch("dangling", "1") {
-			return nil, fmt.Errorf("Invalid filter 'dangling=%s'", pruneFilters.Get("dangling"))
-		}
-	}
-
-	until, err := getUntilFromPruneFilters(pruneFilters)
-	if err != nil {
-		return nil, err
-	}
-
-	var allImages map[image.ID]*image.Image
-	if danglingOnly {
-		allImages = daemon.imageStore.Heads()
-	} else {
-		allImages = daemon.imageStore.Map()
-	}
-	allContainers := daemon.List()
-	imageRefs := map[string]bool{}
-	for _, c := range allContainers {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-			imageRefs[c.ID] = true
-		}
-	}
-
-	// Filter intermediary images and get their unique size
-	allLayers := daemon.layerStore.Map()
-	topImages := map[image.ID]*image.Image{}
-	for id, img := range allImages {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-			dgst := digest.Digest(id)
-			if len(daemon.referenceStore.References(dgst)) == 0 && len(daemon.imageStore.Children(id)) != 0 {
-				continue
-			}
-			if !until.IsZero() && img.Created.After(until) {
-				continue
-			}
-			if !matchLabels(pruneFilters, img.Config.Labels) {
-				continue
-			}
-			topImages[id] = img
-		}
-	}
-
-	canceled := false
-deleteImagesLoop:
-	for id := range topImages {
-		select {
-		case <-ctx.Done():
-			// we still want to calculate freed size and return the data
-			canceled = true
-			break deleteImagesLoop
-		default:
-		}
-
-		dgst := digest.Digest(id)
-		hex := dgst.Hex()
-		if _, ok := imageRefs[hex]; ok {
-			continue
-		}
-
-		deletedImages := []types.ImageDeleteResponseItem{}
-		refs := daemon.referenceStore.References(dgst)
-		if len(refs) > 0 {
-			shouldDelete := !danglingOnly
-			if !shouldDelete {
-				hasTag := false
-				for _, ref := range refs {
-					if _, ok := ref.(reference.NamedTagged); ok {
-						hasTag = true
-						break
-					}
-				}
-
-				// Only delete if it's untagged (i.e. repo:<none>)
-				shouldDelete = !hasTag
-			}
-
-			if shouldDelete {
-				for _, ref := range refs {
-					imgDel, err := daemon.ImageDelete(ref.String(), false, true)
-					if err != nil {
-						logrus.Warnf("could not delete reference %s: %v", ref.String(), err)
-						continue
-					}
-					deletedImages = append(deletedImages, imgDel...)
-				}
-			}
-		} else {
-			imgDel, err := daemon.ImageDelete(hex, false, true)
-			if err != nil {
-				logrus.Warnf("could not delete image %s: %v", hex, err)
-				continue
-			}
-			deletedImages = append(deletedImages, imgDel...)
-		}
-
-		rep.ImagesDeleted = append(rep.ImagesDeleted, deletedImages...)
-	}
-
-	// Compute how much space was freed
-	for _, d := range rep.ImagesDeleted {
-		if d.Deleted != "" {
-			chid := layer.ChainID(d.Deleted)
-			if l, ok := allLayers[chid]; ok {
-				diffSize, err := l.DiffSize()
-				if err != nil {
-					logrus.Warnf("failed to get layer %s size: %v", chid, err)
-					continue
-				}
-				rep.SpaceReclaimed += uint64(diffSize)
-			}
-		}
-	}
-
-	if canceled {
-		logrus.Warnf("ImagesPrune operation cancelled: %#v", *rep)
-		return nil, ctx.Err()
-	}
-
-	return rep, nil
 }
 
 // localNetworksPrune removes unused local networks
@@ -273,8 +159,12 @@ func (daemon *Daemon) localNetworksPrune(ctx context.Context, pruneFilters filte
 	l := func(nw libnetwork.Network) bool {
 		select {
 		case <-ctx.Done():
+			// context cancelled
 			return true
 		default:
+		}
+		if nw.Info().ConfigOnly() {
+			return false
 		}
 		if !until.IsZero() && nw.Info().Created().After(until) {
 			return false
@@ -320,7 +210,7 @@ func (daemon *Daemon) clusterNetworksPrune(ctx context.Context, pruneFilters fil
 	for _, nw := range networks {
 		select {
 		case <-ctx.Done():
-			return rep, ctx.Err()
+			return rep, nil
 		default:
 			if nw.Ingress {
 				// Routing-mesh network removal has to be explicitly invoked by user
@@ -353,9 +243,15 @@ func (daemon *Daemon) clusterNetworksPrune(ctx context.Context, pruneFilters fil
 // NetworksPrune removes unused networks
 func (daemon *Daemon) NetworksPrune(ctx context.Context, pruneFilters filters.Args) (*types.NetworksPruneReport, error) {
 	if !atomic.CompareAndSwapInt32(&daemon.pruneRunning, 0, 1) {
-		return nil, ErrPruneRunning
+		return nil, errPruneRunning
 	}
 	defer atomic.StoreInt32(&daemon.pruneRunning, 0)
+
+	// make sure that only accepted filters have been received
+	err := pruneFilters.Validate(networksAcceptedFilters)
+	if err != nil {
+		return nil, err
+	}
 
 	if _, err := getUntilFromPruneFilters(pruneFilters); err != nil {
 		return nil, err
@@ -371,8 +267,8 @@ func (daemon *Daemon) NetworksPrune(ctx context.Context, pruneFilters filters.Ar
 
 	select {
 	case <-ctx.Done():
-		logrus.Warnf("NetworksPrune operation cancelled: %#v", *rep)
-		return nil, ctx.Err()
+		logrus.Debugf("NetworksPrune operation cancelled: %#v", *rep)
+		return rep, nil
 	default:
 	}
 
@@ -381,7 +277,7 @@ func (daemon *Daemon) NetworksPrune(ctx context.Context, pruneFilters filters.Ar
 
 func getUntilFromPruneFilters(pruneFilters filters.Args) (time.Time, error) {
 	until := time.Time{}
-	if !pruneFilters.Include("until") {
+	if !pruneFilters.Contains("until") {
 		return until, nil
 	}
 	untilFilters := pruneFilters.Get("until")
@@ -405,8 +301,8 @@ func matchLabels(pruneFilters filters.Args, labels map[string]string) bool {
 		return false
 	}
 	// By default MatchKVList will return true if field (like 'label!') does not exist
-	// So we have to add additional Include("label!") check
-	if pruneFilters.Include("label!") {
+	// So we have to add additional Contains("label!") check
+	if pruneFilters.Contains("label!") {
 		if pruneFilters.MatchKVList("label!", labels) {
 			return false
 		}

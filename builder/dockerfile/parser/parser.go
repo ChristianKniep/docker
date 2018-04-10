@@ -1,5 +1,5 @@
 // Package parser implements a parser and parse tree dumper for Dockerfiles.
-package parser
+package parser // import "github.com/docker/docker/builder/dockerfile/parser"
 
 import (
 	"bufio"
@@ -107,29 +107,28 @@ func (d *Directive) setEscapeToken(s string) error {
 	return nil
 }
 
-// processLine looks for a parser directive '# escapeToken=<char>. Parser
-// directives must precede any builder instruction or other comments, and cannot
-// be repeated.
-func (d *Directive) processLine(line string) error {
+// possibleParserDirective looks for parser directives, eg '# escapeToken=<char>'.
+// Parser directives must precede any builder instruction or other comments,
+// and cannot be repeated.
+func (d *Directive) possibleParserDirective(line string) error {
 	if d.processingComplete {
 		return nil
 	}
-	// Processing is finished after the first call
-	defer func() { d.processingComplete = true }()
 
 	tecMatch := tokenEscapeCommand.FindStringSubmatch(strings.ToLower(line))
-	if len(tecMatch) == 0 {
-		return nil
-	}
-	if d.escapeSeen == true {
-		return errors.New("only one escape parser directive can be used")
-	}
-	for i, n := range tokenEscapeCommand.SubexpNames() {
-		if n == "escapechar" {
-			d.escapeSeen = true
-			return d.setEscapeToken(tecMatch[i])
+	if len(tecMatch) != 0 {
+		for i, n := range tokenEscapeCommand.SubexpNames() {
+			if n == "escapechar" {
+				if d.escapeSeen {
+					return errors.New("only one escape parser directive can be used")
+				}
+				d.escapeSeen = true
+				return d.setEscapeToken(tecMatch[i])
+			}
 		}
 	}
+
+	d.processingComplete = true
 	return nil
 }
 
@@ -201,6 +200,15 @@ func newNodeFromLine(line string, directive *Directive) (*Node, error) {
 type Result struct {
 	AST         *Node
 	EscapeToken rune
+	Warnings    []string
+}
+
+// PrintWarnings to the writer
+func (r *Result) PrintWarnings(out io.Writer) {
+	if len(r.Warnings) == 0 {
+		return
+	}
+	fmt.Fprintf(out, strings.Join(r.Warnings, "\n")+"\n")
 }
 
 // Parse reads lines from a Reader, parses the lines into an AST and returns
@@ -210,39 +218,52 @@ func Parse(rwc io.Reader) (*Result, error) {
 	currentLine := 0
 	root := &Node{StartLine: -1}
 	scanner := bufio.NewScanner(rwc)
+	warnings := []string{}
 
 	var err error
 	for scanner.Scan() {
-		bytes := scanner.Bytes()
-		switch currentLine {
-		case 0:
-			bytes, err = processFirstLine(d, bytes)
-			if err != nil {
-				return nil, err
-			}
-		default:
-			bytes = processLine(bytes, true)
+		bytesRead := scanner.Bytes()
+		if currentLine == 0 {
+			// First line, strip the byte-order-marker if present
+			bytesRead = bytes.TrimPrefix(bytesRead, utf8bom)
+		}
+		bytesRead, err = processLine(d, bytesRead, true)
+		if err != nil {
+			return nil, err
 		}
 		currentLine++
 
 		startLine := currentLine
-		line, isEndOfLine := trimContinuationCharacter(string(bytes), d)
+		line, isEndOfLine := trimContinuationCharacter(string(bytesRead), d)
 		if isEndOfLine && line == "" {
 			continue
 		}
 
+		var hasEmptyContinuationLine bool
 		for !isEndOfLine && scanner.Scan() {
-			bytes := processLine(scanner.Bytes(), false)
+			bytesRead, err := processLine(d, scanner.Bytes(), false)
+			if err != nil {
+				return nil, err
+			}
 			currentLine++
 
-			// TODO: warn this is being deprecated/removed
-			if isEmptyContinuationLine(bytes) {
+			if isComment(scanner.Bytes()) {
+				// original line was a comment (processLine strips comments)
+				continue
+			}
+			if isEmptyContinuationLine(bytesRead) {
+				hasEmptyContinuationLine = true
 				continue
 			}
 
-			continuationLine := string(bytes)
+			continuationLine := string(bytesRead)
 			continuationLine, isEndOfLine = trimContinuationCharacter(continuationLine, d)
 			line += continuationLine
+		}
+
+		if hasEmptyContinuationLine {
+			warning := "[WARNING]: Empty continuation line found in:\n    " + line
+			warnings = append(warnings, warning)
 		}
 
 		child, err := newNodeFromLine(line, d)
@@ -252,7 +273,14 @@ func Parse(rwc io.Reader) (*Result, error) {
 		root.AddChild(child, startLine, currentLine)
 	}
 
-	return &Result{AST: root, EscapeToken: d.escapeToken}, nil
+	if len(warnings) > 0 {
+		warnings = append(warnings, "[WARNING]: Empty continuation lines will become errors in a future release.")
+	}
+	return &Result{
+		AST:         root,
+		Warnings:    warnings,
+		EscapeToken: d.escapeToken,
+	}, handleScannerError(scanner.Err())
 }
 
 func trimComments(src []byte) []byte {
@@ -263,8 +291,12 @@ func trimWhitespace(src []byte) []byte {
 	return bytes.TrimLeftFunc(src, unicode.IsSpace)
 }
 
+func isComment(line []byte) bool {
+	return tokenComment.Match(trimWhitespace(line))
+}
+
 func isEmptyContinuationLine(line []byte) bool {
-	return len(trimComments(trimWhitespace(line))) == 0
+	return len(trimWhitespace(line)) == 0
 }
 
 var utf8bom = []byte{0xEF, 0xBB, 0xBF}
@@ -279,16 +311,18 @@ func trimContinuationCharacter(line string, d *Directive) (string, bool) {
 
 // TODO: remove stripLeftWhitespace after deprecation period. It seems silly
 // to preserve whitespace on continuation lines. Why is that done?
-func processLine(token []byte, stripLeftWhitespace bool) []byte {
+func processLine(d *Directive, token []byte, stripLeftWhitespace bool) ([]byte, error) {
 	if stripLeftWhitespace {
 		token = trimWhitespace(token)
 	}
-	return trimComments(token)
+	return trimComments(token), d.possibleParserDirective(string(token))
 }
 
-func processFirstLine(d *Directive, token []byte) ([]byte, error) {
-	token = bytes.TrimPrefix(token, utf8bom)
-	token = trimWhitespace(token)
-	err := d.processLine(string(token))
-	return trimComments(token), err
+func handleScannerError(err error) error {
+	switch err {
+	case bufio.ErrTooLong:
+		return errors.Errorf("dockerfile line greater than max allowed size of %d", bufio.MaxScanTokenSize-1)
+	default:
+		return err
+	}
 }

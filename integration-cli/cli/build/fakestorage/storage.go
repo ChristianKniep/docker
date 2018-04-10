@@ -1,4 +1,4 @@
-package fakestorage
+package fakestorage // import "github.com/docker/docker/integration-cli/cli/build/fakestorage"
 
 import (
 	"fmt"
@@ -8,46 +8,32 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/docker/docker/integration-cli/cli"
 	"github.com/docker/docker/integration-cli/cli/build"
 	"github.com/docker/docker/integration-cli/cli/build/fakecontext"
-	"github.com/docker/docker/integration-cli/environment"
 	"github.com/docker/docker/integration-cli/request"
-	"github.com/docker/docker/pkg/stringutils"
+	"github.com/docker/docker/internal/test/environment"
+	"github.com/docker/docker/internal/testutil"
+	"github.com/gotestyourself/gotestyourself/assert"
 )
 
-var (
-	testEnv  *environment.Execution
-	onlyOnce sync.Once
-)
-
-// EnsureTestEnvIsLoaded make sure the test environment is loaded for this package
-func EnsureTestEnvIsLoaded(t testingT) {
-	var doIt bool
-	var err error
-	onlyOnce.Do(func() {
-		doIt = true
-	})
-
-	if !doIt {
-		return
-	}
-	testEnv, err = environment.New()
-	if err != nil {
-		t.Fatalf("error loading testenv : %v", err)
-	}
-}
+var testEnv *environment.Execution
 
 type testingT interface {
+	assert.TestingT
 	logT
+	skipT
 	Fatal(args ...interface{})
 	Fatalf(string, ...interface{})
 }
 
 type logT interface {
 	Logf(string, ...interface{})
+}
+
+type skipT interface {
+	Skip(reason string)
 }
 
 // Fake is a static file server. It might be running locally or remotely
@@ -58,13 +44,27 @@ type Fake interface {
 	CtxDir() string
 }
 
+// SetTestEnvironment sets a static test environment
+// TODO: decouple this package from environment
+func SetTestEnvironment(env *environment.Execution) {
+	testEnv = env
+}
+
 // New returns a static file server that will be use as build context.
 func New(t testingT, dir string, modifiers ...func(*fakecontext.Fake) error) Fake {
-	ctx := fakecontext.New(t, dir, modifiers...)
-	if testEnv.LocalDaemon() {
-		return newLocalFakeStorage(t, ctx)
+	if testEnv == nil {
+		t.Fatal("fakstorage package requires SetTestEnvironment() to be called before use.")
 	}
-	return newRemoteFileServer(t, ctx)
+	ctx := fakecontext.New(t, dir, modifiers...)
+	switch {
+	case testEnv.IsRemoteDaemon() && strings.HasPrefix(request.DaemonHost(), "unix:///"):
+		t.Skip(fmt.Sprintf("e2e run : daemon is remote but docker host points to a unix socket"))
+	case testEnv.IsLocalDaemon():
+		return newLocalFakeStorage(ctx)
+	default:
+		return newRemoteFileServer(t, ctx)
+	}
+	return nil
 }
 
 // localFileStorage is a file storage on the running machine
@@ -86,7 +86,7 @@ func (s *localFileStorage) Close() error {
 	return s.Fake.Close()
 }
 
-func newLocalFakeStorage(t testingT, ctx *fakecontext.Fake) *localFileStorage {
+func newLocalFakeStorage(ctx *fakecontext.Fake) *localFileStorage {
 	handler := http.FileServer(http.Dir(ctx.Dir))
 	server := httptest.NewServer(handler)
 	return &localFileStorage{
@@ -134,8 +134,8 @@ func (f *remoteFileServer) Close() error {
 
 func newRemoteFileServer(t testingT, ctx *fakecontext.Fake) *remoteFileServer {
 	var (
-		image     = fmt.Sprintf("fileserver-img-%s", strings.ToLower(stringutils.GenerateRandomAlphaOnlyString(10)))
-		container = fmt.Sprintf("fileserver-cnt-%s", strings.ToLower(stringutils.GenerateRandomAlphaOnlyString(10)))
+		image     = fmt.Sprintf("fileserver-img-%s", strings.ToLower(testutil.GenerateRandomAlphaOnlyString(10)))
+		container = fmt.Sprintf("fileserver-cnt-%s", strings.ToLower(testutil.GenerateRandomAlphaOnlyString(10)))
 	)
 
 	ensureHTTPServerImage(t)
@@ -162,7 +162,6 @@ COPY . /static`); err != nil {
 	if err != nil {
 		t.Fatalf("unable to parse daemon host URL: %v", err)
 	}
-
 	host, _, err := net.SplitHostPort(dockerHostURL.Host)
 	if err != nil {
 		t.Fatalf("unable to parse docker daemon host:port: %v", err)

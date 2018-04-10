@@ -1,4 +1,4 @@
-package daemon
+package daemon // import "github.com/docker/docker/daemon"
 
 import (
 	"fmt"
@@ -9,13 +9,13 @@ import (
 	"github.com/docker/docker/api/types"
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/container"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/stretchr/testify/require"
+	"github.com/docker/docker/internal/testutil"
+	"github.com/gotestyourself/gotestyourself/assert"
 )
 
 func newDaemonWithTmpRoot(t *testing.T) (*Daemon, func()) {
 	tmp, err := ioutil.TempDir("", "docker-daemon-unix-test-")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	d := &Daemon{
 		repository: tmp,
 		root:       tmp,
@@ -26,11 +26,9 @@ func newDaemonWithTmpRoot(t *testing.T) (*Daemon, func()) {
 
 func newContainerWithState(state *container.State) *container.Container {
 	return &container.Container{
-		CommonContainer: container.CommonContainer{
-			ID:     "test",
-			State:  state,
-			Config: &containertypes.Config{},
-		},
+		ID:     "test",
+		State:  state,
+		Config: &containertypes.Config{},
 	}
 
 }

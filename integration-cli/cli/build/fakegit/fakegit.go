@@ -1,4 +1,4 @@
-package fakegit
+package fakegit // import "github.com/docker/docker/integration-cli/cli/build/fakegit"
 
 import (
 	"fmt"
@@ -11,16 +11,23 @@ import (
 
 	"github.com/docker/docker/integration-cli/cli/build/fakecontext"
 	"github.com/docker/docker/integration-cli/cli/build/fakestorage"
+	"github.com/gotestyourself/gotestyourself/assert"
 )
 
 type testingT interface {
+	assert.TestingT
 	logT
+	skipT
 	Fatal(args ...interface{})
 	Fatalf(string, ...interface{})
 }
 
 type logT interface {
 	Logf(string, ...interface{})
+}
+
+type skipT interface {
+	Skip(reason string)
 }
 
 type gitServer interface {

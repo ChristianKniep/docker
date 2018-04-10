@@ -1,91 +1,66 @@
-package dockerfile
+package dockerfile // import "github.com/docker/docker/builder/dockerfile"
 
 import (
-	"strconv"
-	"strings"
+	"runtime"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/backend"
 	"github.com/docker/docker/builder"
-	"github.com/docker/docker/builder/remotecontext"
+	dockerimage "github.com/docker/docker/image"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/net/context"
 )
 
-type pathCache interface {
-	Load(key interface{}) (value interface{}, ok bool)
-	Store(key, value interface{})
+type getAndMountFunc func(string, bool, string) (builder.Image, builder.ROLayer, error)
+
+// imageSources mounts images and provides a cache for mounted images. It tracks
+// all images so they can be unmounted at the end of the build.
+type imageSources struct {
+	byImageID map[string]*imageMount
+	mounts    []*imageMount
+	getImage  getAndMountFunc
 }
 
-// imageContexts is a helper for stacking up built image rootfs and reusing
-// them as contexts
-type imageContexts struct {
-	b      *Builder
-	list   []*imageMount
-	byName map[string]*imageMount
-	cache  pathCache
-}
-
-func (ic *imageContexts) newImageMount(id string) *imageMount {
-	return &imageMount{ic: ic, id: id}
-}
-
-func (ic *imageContexts) add(name string) (*imageMount, error) {
-	im := &imageMount{ic: ic}
-	if len(name) > 0 {
-		if ic.byName == nil {
-			ic.byName = make(map[string]*imageMount)
+func newImageSources(ctx context.Context, options builderOptions) *imageSources {
+	getAndMount := func(idOrRef string, localOnly bool, osForPull string) (builder.Image, builder.ROLayer, error) {
+		pullOption := backend.PullOptionNoPull
+		if !localOnly {
+			if options.Options.PullParent {
+				pullOption = backend.PullOptionForcePull
+			} else {
+				pullOption = backend.PullOptionPreferLocal
+			}
 		}
-		if _, ok := ic.byName[name]; ok {
-			return nil, errors.Errorf("duplicate name %s", name)
-		}
-		ic.byName[name] = im
+		return options.Backend.GetImageAndReleasableLayer(ctx, idOrRef, backend.GetImageAndLayerOptions{
+			PullOption: pullOption,
+			AuthConfig: options.Options.AuthConfigs,
+			Output:     options.ProgressWriter.Output,
+			OS:         osForPull,
+		})
 	}
-	ic.list = append(ic.list, im)
-	return im, nil
-}
 
-func (ic *imageContexts) update(imageID string, runConfig *container.Config) {
-	ic.list[len(ic.list)-1].id = imageID
-	ic.list[len(ic.list)-1].runConfig = runConfig
-}
-
-func (ic *imageContexts) validate(i int) error {
-	if i < 0 || i >= len(ic.list)-1 {
-		var extraMsg string
-		if i == len(ic.list)-1 {
-			extraMsg = " refers current build block"
-		}
-		return errors.Errorf("invalid from flag value %d%s", i, extraMsg)
+	return &imageSources{
+		byImageID: make(map[string]*imageMount),
+		getImage:  getAndMount,
 	}
-	return nil
 }
 
-func (ic *imageContexts) get(indexOrName string) (*imageMount, error) {
-	index, err := strconv.Atoi(indexOrName)
-	if err == nil {
-		if err := ic.validate(index); err != nil {
-			return nil, err
-		}
-		return ic.list[index], nil
-	}
-	if im, ok := ic.byName[strings.ToLower(indexOrName)]; ok {
+func (m *imageSources) Get(idOrRef string, localOnly bool, osForPull string) (*imageMount, error) {
+	if im, ok := m.byImageID[idOrRef]; ok {
 		return im, nil
 	}
-	im, err := mountByRef(ic.b, indexOrName)
+
+	image, layer, err := m.getImage(idOrRef, localOnly, osForPull)
 	if err != nil {
-		return nil, errors.Wrapf(err, "invalid from flag value %s", indexOrName)
+		return nil, err
 	}
+	im := newImageMount(image, layer)
+	m.Add(im)
 	return im, nil
 }
 
-func (ic *imageContexts) unmount() (retErr error) {
-	for _, im := range ic.list {
-		if err := im.unmount(); err != nil {
-			logrus.Error(err)
-			retErr = err
-		}
-	}
-	for _, im := range ic.byName {
+func (m *imageSources) Unmount() (retErr error) {
+	for _, im := range m.mounts {
 		if err := im.unmount(); err != nil {
 			logrus.Error(err)
 			retErr = err
@@ -94,64 +69,53 @@ func (ic *imageContexts) unmount() (retErr error) {
 	return
 }
 
-func (ic *imageContexts) getCache(id, path string) (interface{}, bool) {
-	if ic.cache != nil {
-		if id == "" {
-			return nil, false
+func (m *imageSources) Add(im *imageMount) {
+	switch im.image {
+	case nil:
+		// set the OS for scratch images
+		os := runtime.GOOS
+		// Windows does not support scratch except for LCOW
+		if runtime.GOOS == "windows" {
+			os = "linux"
 		}
-		return ic.cache.Load(id + path)
+		im.image = &dockerimage.Image{V1Image: dockerimage.V1Image{OS: os}}
+	default:
+		m.byImageID[im.image.ImageID()] = im
 	}
-	return nil, false
+	m.mounts = append(m.mounts, im)
 }
 
-func (ic *imageContexts) setCache(id, path string, v interface{}) {
-	if ic.cache != nil {
-		ic.cache.Store(id+path, v)
-	}
-}
-
-// imageMount is a reference for getting access to a buildcontext that is backed
-// by an existing image
+// imageMount is a reference to an image that can be used as a builder.Source
 type imageMount struct {
-	id        string
-	source    builder.Source
-	release   func() error
-	ic        *imageContexts
-	runConfig *container.Config
+	image  builder.Image
+	source builder.Source
+	layer  builder.ROLayer
 }
 
-func (im *imageMount) context() (builder.Source, error) {
-	if im.source == nil {
-		if im.id == "" {
-			return nil, errors.Errorf("could not copy from empty context")
-		}
-		p, release, err := im.ic.b.docker.MountImage(im.id)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to mount %s", im.id)
-		}
-		source, err := remotecontext.NewLazyContext(p)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to create lazycontext for %s", p)
-		}
-		im.release = release
-		im.source = source
-	}
-	return im.source, nil
+func newImageMount(image builder.Image, layer builder.ROLayer) *imageMount {
+	im := &imageMount{image: image, layer: layer}
+	return im
 }
 
 func (im *imageMount) unmount() error {
-	if im.release != nil {
-		if err := im.release(); err != nil {
-			return errors.Wrapf(err, "failed to unmount previous build image %s", im.id)
-		}
-		im.release = nil
+	if im.layer == nil {
+		return nil
 	}
+	if err := im.layer.Release(); err != nil {
+		return errors.Wrapf(err, "failed to unmount previous build image %s", im.image.ImageID())
+	}
+	im.layer = nil
 	return nil
 }
 
-func (im *imageMount) ImageID() string {
-	return im.id
+func (im *imageMount) Image() builder.Image {
+	return im.image
 }
-func (im *imageMount) RunConfig() *container.Config {
-	return im.runConfig
+
+func (im *imageMount) NewRWLayer() (builder.RWLayer, error) {
+	return im.layer.NewRWLayer()
+}
+
+func (im *imageMount) ImageID() string {
+	return im.image.ImageID()
 }
